@@ -483,7 +483,7 @@ NODE_COMPILE_CACHE=/app/workspace/.openclaw-state/compile-cache,\
 OPENCLAW_HANDSHAKE_TIMEOUT_MS=60000,\
 NODE_TLS_REJECT_UNAUTHORIZED=0,\
 EXEC_VMS_ENABLED=false,\
-GATEWAY_BIND=loopback"
+GATEWAY_BIND=lan"
 ```
 
 > **Multiple developers:** Wrap the deploy in a loop:
@@ -504,7 +504,7 @@ GATEWAY_BIND=loopback"
 >     --memory 2Gi --cpu 2 \
 >     --set-secrets "GATEWAY_AUTH_TOKEN=${GATEWAY_SECRET}:latest,LITELLM_MASTER_KEY=${LITELLM_KEY_SECRET}:latest" \
 >     --add-volume "mount-path=/app/workspace,type=cloud-storage,bucket=${PROJECT_ID}-${NAME_PREFIX}-openclaw-workspace-${DEVELOPER}" \
->     --set-env-vars "DEVELOPER=${DEVELOPER},VERTEXAI_PROJECT=${PROJECT_ID},VERTEXAI_LOCATION=global,GOOGLE_VERTEX_BASE_URL=https://aiplatform.googleapis.com/,LITELLM_BASE_URL=${LITELLM_URL}/v1,MODEL_PRIMARY=litellm/gemini-3.1-pro-preview,MODEL_FALLBACKS=[\"litellm/gemini-3.1-flash-lite-preview\"],OPENCLAW_STATE_DIR=/app/workspace/.openclaw-state,OPENCLAW_NO_RESPAWN=1,NODE_COMPILE_CACHE=/app/workspace/.openclaw-state/compile-cache,OPENCLAW_HANDSHAKE_TIMEOUT_MS=60000,NODE_TLS_REJECT_UNAUTHORIZED=0,EXEC_VMS_ENABLED=false,GATEWAY_BIND=loopback"
+>     --set-env-vars "DEVELOPER=${DEVELOPER},VERTEXAI_PROJECT=${PROJECT_ID},VERTEXAI_LOCATION=global,GOOGLE_VERTEX_BASE_URL=https://aiplatform.googleapis.com/,LITELLM_BASE_URL=${LITELLM_URL}/v1,MODEL_PRIMARY=litellm/gemini-3.1-pro-preview,MODEL_FALLBACKS=[\"litellm/gemini-3.1-flash-lite-preview\"],OPENCLAW_STATE_DIR=/app/workspace/.openclaw-state,OPENCLAW_NO_RESPAWN=1,NODE_COMPILE_CACHE=/app/workspace/.openclaw-state/compile-cache,OPENCLAW_HANDSHAKE_TIMEOUT_MS=60000,NODE_TLS_REJECT_UNAUTHORIZED=0,EXEC_VMS_ENABLED=false,GATEWAY_BIND=lan"
 > done
 > ```
 
