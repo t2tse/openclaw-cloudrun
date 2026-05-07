@@ -461,6 +461,7 @@ gcloud run deploy ${NAME_PREFIX}-openclaw-brain-${DEVELOPER} \
   --network openclaw-run-vpc \
   --subnet $SUBNET \
   --scaling 1 \
+  --no-cpu-throttling \
   --memory 2Gi --cpu 2 \
   --set-secrets GATEWAY_AUTH_TOKEN=${GATEWAY_SECRET}:latest,LITELLM_MASTER_KEY=${LITELLM_KEY_SECRET}:latest \
   --add-volume name=workspace,type=cloud-storage,bucket=${PROJECT_ID}-${NAME_PREFIX}-openclaw-workspace-${DEVELOPER} \
@@ -481,6 +482,7 @@ gcloud run deploy ${NAME_PREFIX}-openclaw-brain-${DEVELOPER} \
 >     --network openclaw-run-vpc \
 >     --subnet $SUBNET \
 >     --scaling 1 \
+>     --no-cpu-throttling \
 >     --memory 2Gi --cpu 2 \
 >     --set-secrets GATEWAY_AUTH_TOKEN=${GATEWAY_SECRET}:latest,LITELLM_MASTER_KEY=${LITELLM_KEY_SECRET}:latest \
 >     --add-volume name=workspace,type=cloud-storage,bucket=${PROJECT_ID}-${NAME_PREFIX}-openclaw-workspace-${DEVELOPER} \
