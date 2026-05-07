@@ -13,19 +13,16 @@
       "mode": "token",
       "token": "${GATEWAY_AUTH_TOKEN}"
     },
-    "tls": {
-      "enabled": true,
-      "autoGenerate": false,
-      "certPath": "/app/tls/gateway-cert.pem",
-      "keyPath": "/app/tls/gateway-key.pem"
-    },
     "tailscale": {
       "mode": "off",
       "resetOnExit": true
     },
     "controlUi": {
       "allowInsecureAuth": false,
-      "dangerouslyDisableDeviceAuth": true
+      "dangerouslyDisableDeviceAuth": true,
+			"allowedOrigins": [
+				"*"
+			]
     }
   },
 
