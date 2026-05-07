@@ -192,3 +192,57 @@ resource "google_secret_manager_secret_version" "brave_api_key" {
   secret      = google_secret_manager_secret.brave_api_key[0].id
   secret_data = var.brave_api_key
 }
+
+# LiteLLM proxy config YAML — stored in Secret Manager and mounted as a volume
+# into the LiteLLM Cloud Run service at /app/config/litellm_config.yaml
+locals {
+  litellm_config_yaml = yamlencode({
+    model_list = [
+      {
+        model_name = "gemini-3.1-pro-preview"
+        litellm_params = {
+          model           = "vertex_ai/gemini-3.1-pro-preview"
+          vertex_project  = var.project_id
+          vertex_location = "global"
+          timeout         = 120
+          num_retries     = 2
+        }
+      },
+      {
+        model_name = "gemini-3.1-flash-lite-preview"
+        litellm_params = {
+          model           = "vertex_ai/gemini-3.1-flash-lite-preview"
+          vertex_project  = var.project_id
+          vertex_location = "global"
+          timeout         = 120
+          num_retries     = 2
+        }
+      },
+    ]
+    general_settings = {
+      master_key      = "os.environ/LITELLM_MASTER_KEY"
+      request_timeout = 300
+      num_retries     = 2
+      allowed_fails   = 3
+      cooldown_time   = 10
+    }
+  })
+}
+
+resource "google_secret_manager_secret" "litellm_config" {
+  secret_id = "${local.pfx}openclaw-litellm-config"
+  project   = var.project_id
+
+  replication {
+    auto {}
+  }
+
+  labels = var.labels
+
+  depends_on = [google_project_service.apis["secretmanager.googleapis.com"]]
+}
+
+resource "google_secret_manager_secret_version" "litellm_config" {
+  secret      = google_secret_manager_secret.litellm_config.id
+  secret_data = local.litellm_config_yaml
+}

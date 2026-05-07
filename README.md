@@ -417,6 +417,7 @@ export AR_REPO="${REGION}-docker.pkg.dev/${PROJECT_ID}/${NAME_PREFIX}-openclaw-s
 export GHCR_REMOTE_REPO="${REGION}-docker.pkg.dev/${PROJECT_ID}/${NAME_PREFIX}-ghcr-remote"
 export GATEWAY_SECRET="${NAME_PREFIX}-openclaw-gateway-token"
 export LITELLM_KEY_SECRET="${NAME_PREFIX}-openclaw-litellm-key"
+export LITELLM_CONFIG_SECRET="${NAME_PREFIX}-openclaw-litellm-config"
 ```
 
 #### 6a: Deploy the LiteLLM Proxy
@@ -430,6 +431,7 @@ gcloud run deploy ${NAME_PREFIX}-openclaw-litellm \
   --service-account ${NAME_PREFIX}-openclaw-litellm@${PROJECT_ID}.iam.gserviceaccount.com \
   --execution-environment gen2 \
   --port 4000 \
+  --args="--config,/app/config/litellm_config.yaml,--port,4000" \
   --no-allow-unauthenticated \
   --ingress internal \
   --vpc-egress all-traffic \
@@ -437,7 +439,8 @@ gcloud run deploy ${NAME_PREFIX}-openclaw-litellm \
   --subnet $SUBNET \
   --scaling 1 \
   --memory 1Gi --cpu 1 \
-  --set-secrets LITELLM_MASTER_KEY=${LITELLM_KEY_SECRET}:latest
+  --set-secrets "LITELLM_MASTER_KEY=${LITELLM_KEY_SECRET}:latest,/app/config/litellm_config.yaml=${LITELLM_CONFIG_SECRET}:latest" \
+  --set-env-vars "LITELLM_LOG=INFO,LITELLM_DROP_PARAMS=false"
 
 # Capture the service URL for use in brain service deployments
 export LITELLM_URL=$(gcloud run services describe ${NAME_PREFIX}-openclaw-litellm \
@@ -465,10 +468,22 @@ gcloud run deploy ${NAME_PREFIX}-openclaw-brain-${DEVELOPER} \
   --scaling 1 \
   --no-cpu-throttling \
   --memory 2Gi --cpu 2 \
-  --set-secrets GATEWAY_AUTH_TOKEN=${GATEWAY_SECRET}:latest,LITELLM_MASTER_KEY=${LITELLM_KEY_SECRET}:latest \
-  --add-volume name=workspace,type=cloud-storage,bucket=${PROJECT_ID}-${NAME_PREFIX}-openclaw-workspace-${DEVELOPER} \
-  --add-volume-mount volume=workspace,mount-path=/app/workspace \
-  --set-env-vars "DEVELOPER=${DEVELOPER},VERTEXAI_PROJECT=${PROJECT_ID},LITELLM_BASE_URL=${LITELLM_URL}/v1"
+  --set-secrets "GATEWAY_AUTH_TOKEN=${GATEWAY_SECRET}:latest,LITELLM_MASTER_KEY=${LITELLM_KEY_SECRET}:latest" \
+  --add-volume "mount-path=/app/workspace,type=cloud-storage,bucket=${PROJECT_ID}-${NAME_PREFIX}-openclaw-workspace-${DEVELOPER}" \
+  --set-env-vars "DEVELOPER=${DEVELOPER},\
+VERTEXAI_PROJECT=${PROJECT_ID},\
+VERTEXAI_LOCATION=global,\
+GOOGLE_VERTEX_BASE_URL=https://aiplatform.googleapis.com/,\
+LITELLM_BASE_URL=${LITELLM_URL}/v1,\
+MODEL_PRIMARY=litellm/gemini-3.1-pro-preview,\
+MODEL_FALLBACKS=[\"litellm/gemini-3.1-flash-lite-preview\"],\
+OPENCLAW_STATE_DIR=/app/workspace/.openclaw-state,\
+OPENCLAW_NO_RESPAWN=1,\
+NODE_COMPILE_CACHE=/app/workspace/.openclaw-state/compile-cache,\
+OPENCLAW_HANDSHAKE_TIMEOUT_MS=60000,\
+NODE_TLS_REJECT_UNAUTHORIZED=0,\
+EXEC_VMS_ENABLED=false,\
+GATEWAY_BIND=loopback"
 ```
 
 > **Multiple developers:** Wrap the deploy in a loop:
@@ -487,10 +502,9 @@ gcloud run deploy ${NAME_PREFIX}-openclaw-brain-${DEVELOPER} \
 >     --scaling 1 \
 >     --no-cpu-throttling \
 >     --memory 2Gi --cpu 2 \
->     --set-secrets GATEWAY_AUTH_TOKEN=${GATEWAY_SECRET}:latest,LITELLM_MASTER_KEY=${LITELLM_KEY_SECRET}:latest \
->     --add-volume name=workspace,type=cloud-storage,bucket=${PROJECT_ID}-${NAME_PREFIX}-openclaw-workspace-${DEVELOPER} \
->     --add-volume-mount volume=workspace,mount-path=/app/workspace \
->     --set-env-vars "DEVELOPER=${DEVELOPER},VERTEXAI_PROJECT=${PROJECT_ID},LITELLM_BASE_URL=${LITELLM_URL}/v1"
+>     --set-secrets "GATEWAY_AUTH_TOKEN=${GATEWAY_SECRET}:latest,LITELLM_MASTER_KEY=${LITELLM_KEY_SECRET}:latest" \
+>     --add-volume "mount-path=/app/workspace,type=cloud-storage,bucket=${PROJECT_ID}-${NAME_PREFIX}-openclaw-workspace-${DEVELOPER}" \
+>     --set-env-vars "DEVELOPER=${DEVELOPER},VERTEXAI_PROJECT=${PROJECT_ID},VERTEXAI_LOCATION=global,GOOGLE_VERTEX_BASE_URL=https://aiplatform.googleapis.com/,LITELLM_BASE_URL=${LITELLM_URL}/v1,MODEL_PRIMARY=litellm/gemini-3.1-pro-preview,MODEL_FALLBACKS=[\"litellm/gemini-3.1-flash-lite-preview\"],OPENCLAW_STATE_DIR=/app/workspace/.openclaw-state,OPENCLAW_NO_RESPAWN=1,NODE_COMPILE_CACHE=/app/workspace/.openclaw-state/compile-cache,OPENCLAW_HANDSHAKE_TIMEOUT_MS=60000,NODE_TLS_REJECT_UNAUTHORIZED=0,EXEC_VMS_ENABLED=false,GATEWAY_BIND=loopback"
 > done
 > ```
 

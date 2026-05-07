@@ -65,8 +65,14 @@ output "secrets_configured" {
   value = concat(
     [google_secret_manager_secret.gateway_token.secret_id],
     [google_secret_manager_secret.litellm_key.secret_id],
+    [google_secret_manager_secret.litellm_config.secret_id],
     var.brave_api_key != "" ? [google_secret_manager_secret.brave_api_key[0].secret_id] : []
   )
+}
+
+output "litellm_config_secret" {
+  description = "Secret Manager secret ID for the LiteLLM proxy config YAML."
+  value       = google_secret_manager_secret.litellm_config.secret_id
 }
 
 output "name_prefix" {

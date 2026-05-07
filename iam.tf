@@ -117,6 +117,13 @@ resource "google_secret_manager_secret_iam_member" "litellm_key_accessor" {
   member    = google_service_account.openclaw_litellm.member
 }
 
+resource "google_secret_manager_secret_iam_member" "litellm_config_accessor" {
+  secret_id = google_secret_manager_secret.litellm_config.secret_id
+  project   = var.project_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = google_service_account.openclaw_litellm.member
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Execution VM Service Account (optional, shared across all exec VMs)
 # ──────────────────────────────────────────────────────────────────────────────
