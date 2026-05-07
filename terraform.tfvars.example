@@ -10,10 +10,10 @@
 project_id = "my-gcp-project"
 
 # Region & Zone
-region = "us-central1"
-zone   = "us-central1-c"
+region = "us-west1"
+zone   = "us-west1-c"
 
-# Resource name prefix — distinguishes Cloud Run stack from GKE stack in same project.
+# Resource name prefix — distinguishes the current terraform stack from another stack in the same GCP project.
 # All resource names become: run-openclaw-*, and the VPC is openclaw-run-vpc.
 name_prefix  = "run"
 network_name = "openclaw-run-vpc"
