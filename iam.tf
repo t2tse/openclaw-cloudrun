@@ -62,6 +62,16 @@ resource "google_secret_manager_secret_iam_member" "brain_gateway_token_accessor
   member    = google_service_account.openclaw_brain[each.key].member
 }
 
+# Secret: LiteLLM master key — brain SAs pass this to the LiteLLM proxy for auth
+resource "google_secret_manager_secret_iam_member" "brain_litellm_key_accessor" {
+  for_each = var.developers
+
+  secret_id = google_secret_manager_secret.litellm_key.secret_id
+  project   = var.project_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = google_service_account.openclaw_brain[each.key].member
+}
+
 # Secret: Brave API key — only granted when key is configured
 resource "google_secret_manager_secret_iam_member" "brain_brave_accessor" {
   for_each = var.brave_api_key != "" ? var.developers : {}
