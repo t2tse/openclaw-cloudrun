@@ -19,6 +19,7 @@ Deploy [OpenClaw](https://docs.openclaw.ai) on Google Cloud using **Cloud Run** 
 - [Variables Reference](#variables-reference)
 - [Outputs Reference](#outputs-reference)
 - [File Structure](#file-structure)
+- [Private Google Access DNS](#private-google-access-dns)
 - [Troubleshooting](#troubleshooting)
 - [Cleanup](#cleanup)
 
@@ -1290,6 +1291,94 @@ openclaw-cloudrun/
     ├── linux_startup.sh       # Linux VM startup (node hosts via systemd)
     └── windows_startup.ps1    # Windows VM startup (node hosts via Scheduled Tasks)
 ```
+
+[Back to top](#table-of-contents)
+
+---
+
+## Private Google Access DNS
+
+[Back to top](#table-of-contents)
+
+Cloud Run services use Direct VPC Egress — all traffic routes through the VPC. Without Private Google Access DNS, calls from one Cloud Run service to another `*.run.app` URL will fail because there is no public internet path (no external IP, deny-all ingress firewall).
+
+A private Cloud DNS zone redirects `*.run.app` to the `private.googleapis.com` VIP, which is reachable from inside Google Cloud without an external IP.
+
+> **Already included in Terraform.** The file `dns_private_google_access.tf` codifies the three steps below and is applied automatically with `terraform apply`.
+
+### What gets created
+
+| Resource | Type | Value |
+|---|---|---|
+| `${pfx}run-app-private` | Private DNS zone | `run.app.` bound to your VPC |
+| `run.app.` | A record (IPv4) | `199.36.153.8`, `9`, `10`, `11` |
+| `*.run.app.` | CNAME | → `run.app.` |
+
+### Verify
+
+After `terraform apply`, run the following to confirm the DNS zone and records are correctly configured.
+
+```bash
+export PROJECT_ID="my-gcp-project"
+export NAME_PREFIX="run"   # match name_prefix in terraform.tfvars
+
+# 1. Confirm the private zone exists and is bound to the VPC
+gcloud dns managed-zones describe ${NAME_PREFIX}-run-app-private \
+  --project=$PROJECT_ID \
+  --format='yaml(name,dnsName,visibility,privateVisibilityConfig)'
+
+# Expected:
+# dnsName: run.app.
+# name: run-run-app-private
+# privateVisibilityConfig:
+#   networks:
+#   - networkUrl: https://www.googleapis.com/.../networks/openclaw-run-vpc
+# visibility: private
+
+# 2. List all DNS records in the zone
+gcloud dns record-sets list \
+  --zone=${NAME_PREFIX}-run-app-private \
+  --project=$PROJECT_ID
+
+# Expected output (3 records):
+# NAME          TYPE   TTL  DATA
+# run.app.      NS     21600 ns-cloud-*.googledomains.com., ...
+# run.app.      A      300  199.36.153.8, 199.36.153.9, 199.36.153.10, 199.36.153.11
+# *.run.app.    CNAME  300  run.app.
+
+# 3. Verify DNS resolution from inside a Cloud Run container
+#    (resolves a *.run.app hostname — the exact address does not matter)
+gcloud alpha run services ssh ${NAME_PREFIX}-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID \
+  <<< 'getent hosts some-service-abc123.a.run.app'
+
+# Expected: an IP in 199.36.153.8–11 range
+# e.g.  199.36.153.9   some-service-abc123.a.run.app
+
+# 4. Smoke-test reachability to the private.googleapis.com VIP
+gcloud alpha run services ssh ${NAME_PREFIX}-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID \
+  <<< 'curl -si --max-time 5 https://run.app/ | head -3'
+
+# Expected: HTTP response headers (e.g. HTTP/2 404 or 200) — NOT a connection timeout.
+# A timeout means the VIP is unreachable (check Private Google Access on the subnet).
+
+# 5. Confirm Private Google Access is enabled on the Cloud Run subnet
+gcloud compute networks subnets describe openclaw-run-vpc-cloudrun-subnet \
+  --region=$REGION --project=$PROJECT_ID \
+  --format='value(privateIpGoogleAccess)'
+
+# Expected: True
+```
+
+### Troubleshooting DNS
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `getent hosts` returns public IP (not `199.36.153.x`) | Zone not bound to VPC, or wrong VPC | Check `privateVisibilityConfig.networks` in zone describe |
+| `curl` to `run.app` times out | `privateIpGoogleAccess` disabled on subnet | Already set to `true` in `network.tf` — re-run `terraform apply` |
+| Missing CNAME or A record | Partial apply or record deleted manually | Re-run `terraform apply` |
+| DNS zone name conflict | Another zone already resolving `run.app.` in this VPC | Check with `gcloud dns managed-zones list --project=$PROJECT_ID` |
 
 [Back to top](#table-of-contents)
 
