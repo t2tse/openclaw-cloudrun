@@ -66,6 +66,30 @@ resource "google_artifact_registry_repository" "sandbox" {
   labels = var.labels
 }
 
+# Artifact Registry remote repository proxying ghcr.io
+# Cloud Run only accepts images from gcr.io, pkg.dev, or docker.io.
+# This remote repo transparently pulls and caches ghcr.io images via Artifact Registry.
+resource "google_artifact_registry_repository" "litellm_remote" {
+  location      = var.region
+  repository_id = "${local.pfx}ghcr-remote"
+  description   = "Remote proxy for ghcr.io"
+  format        = "DOCKER"
+  mode          = "REMOTE_REPOSITORY"
+  project       = var.project_id
+
+  remote_repository_config {
+    description = "GitHub Container Registry (ghcr.io)"
+    docker_repository {
+      custom_repository {
+        uri = "https://ghcr.io"
+      }
+    }
+  }
+
+  labels     = var.labels
+  depends_on = [google_project_service.apis["artifactregistry.googleapis.com"]]
+}
+
 # Build and push OpenClaw container image via Cloud Build
 resource "null_resource" "build_openclaw_image" {
   triggers = {
@@ -80,6 +104,7 @@ resource "null_resource" "build_openclaw_image" {
     environment = {
       PROJECT_ID = var.project_id
       REGION     = var.region
+      RESOURCE_PREFIX     = local.pfx
     }
   }
 

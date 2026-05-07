@@ -4,10 +4,11 @@ set -e
 # Configuration — set these for your environment
 REGION="${REGION:-asia-southeast1}"
 PROJECT_ID="${PROJECT_ID:?Set PROJECT_ID environment variable}"
-REPOSITORY="openclaw-sandbox"
+RESOURCE_PREFIX="${RESOURCE_PREFIX:=run-}"
+REPOSITORY=${RESOURCE_PREFIX}"openclaw-sandbox"
 IMAGE_NAME="openclaw"
 TAG="latest"
-SERVICE_ACCOUNT="openclaw-cloudbuild@${PROJECT_ID}.iam.gserviceaccount.com"
+SERVICE_ACCOUNT="${RESOURCE_PREFIX}openclaw-cloudbuild@${PROJECT_ID}.iam.gserviceaccount.com"
 
 IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}:${TAG}"
 

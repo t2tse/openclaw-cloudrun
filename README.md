@@ -353,12 +353,6 @@ execution_environment = "gen2"
 alert_email = "you@example.com"
 ```
 
-Getting the client external IP for GKE Control plane access (`master_authorized_cidrs`)
-```bash
-curl ifconfig.me
-```
-
-
 Set sensitive variables via environment:
 
 ```bash
@@ -380,13 +374,14 @@ This will:
 1. Enable all required GCP APIs
 2. Create VPC (`openclaw-run-vpc`), subnet, Cloud NAT, firewall rules
 3. Create Artifact Registry repository and build the OpenClaw image via Cloud Build
-4. Create per-developer Cloud Run services with Direct VPC Egress and GCS FUSE workspace mounts
-5. Deploy the LiteLLM proxy service
-6. Create per-developer GCS workspace buckets
-7. Create per-developer service accounts with least-privilege IAM bindings
-8. Store secrets in Secret Manager
-9. Set up monitoring dashboard, alert policies, and log sink
-10. *(If `exec_vms` is non-empty)* Create execution VMs, subnet, firewall, and node hosts
+4. Create per-developer GCS workspace buckets
+5. Create per-developer service accounts with least-privilege IAM bindings
+6. Create the LiteLLM service account with Vertex AI and logging access
+7. Store secrets in Secret Manager (gateway token, LiteLLM key, optional Brave API key)
+8. Set up monitoring dashboard, alert policies, and log sink
+9. *(If `exec_vms` is non-empty)* Create execution VMs, subnet, firewall, and startup scripts
+
+> **Note:** Cloud Run services are deployed separately in **Step 5** using `gcloud run deploy`.
 
 Deployment takes approximately 8–12 minutes (Cloud Build image build is the bottleneck).
 
@@ -405,18 +400,98 @@ export REGION="us-central1"
 ./scripts/build_and_push.sh
 ```
 
-Then redeploy each developer service to pick up the new image:
+[Back to top](#table-of-contents)
+
+### Step 6: Deploy Cloud Run Services
+
+Terraform creates all supporting infrastructure (VPC, IAM, secrets, GCS buckets, Artifact Registry, and the container image via Cloud Build). The Cloud Run services themselves are deployed with `gcloud run deploy`.
 
 ```bash
-# Redeploy alice's service (Cloud Run picks up the latest image tag)
-gcloud run services update run-openclaw-brain-alice \
-  --region $REGION --project $PROJECT_ID \
-  --image ${REGION}-docker.pkg.dev/${PROJECT_ID}/run-openclaw/openclaw:latest
+export PROJECT_ID="my-gcp-project"
+export REGION="us-central1"
+
+# Resolve names from Terraform state
+export SUBNET=$(terraform output -raw cloudrun_subnet)
+export NAME_PREFIX=$(terraform output -raw name_prefix)  # match name_prefix in terraform.tfvars
+export AR_REPO="${REGION}-docker.pkg.dev/${PROJECT_ID}/${NAME_PREFIX}-openclaw-sandbox"
+export GHCR_REMOTE_REPO="${REGION}-docker.pkg.dev/${PROJECT_ID}/${NAME_PREFIX}-ghcr-remote"
+export GATEWAY_SECRET="${NAME_PREFIX}-openclaw-gateway-token"
+export LITELLM_KEY_SECRET="${NAME_PREFIX}-openclaw-litellm-key"
 ```
+
+#### 6a: Deploy the LiteLLM Proxy
+
+Deploy the shared LiteLLM proxy first — brain services need its URL as an environment variable.
+
+```bash
+gcloud run deploy ${NAME_PREFIX}-openclaw-litellm \
+  --image "${GHCR_REMOTE_REPO}/berriai/litellm@sha256:7c311546c25e7bb6e8cafede9fcd3d0d622ac636b5c9418befaa32e85dfb0186" \
+  --region $REGION --project $PROJECT_ID \
+  --service-account ${NAME_PREFIX}-openclaw-litellm@${PROJECT_ID}.iam.gserviceaccount.com \
+  --execution-environment gen2 \
+  --no-allow-unauthenticated \
+  --ingress internal \
+  --vpc-egress all-traffic \
+  --network openclaw-run-vpc \
+  --subnet $SUBNET \
+  --scaling 1 \
+  --memory 512Mi --cpu 1 \
+  --set-secrets LITELLM_MASTER_KEY=${LITELLM_KEY_SECRET}:latest
+
+# Capture the service URL for use in brain service deployments
+export LITELLM_URL=$(gcloud run services describe ${NAME_PREFIX}-openclaw-litellm \
+  --region $REGION --project $PROJECT_ID \
+  --format='value(status.url)')
+```
+
+#### 6b: Deploy Per-Developer Brain Services
+
+Repeat for each developer defined in `terraform.tfvars`. The example below uses `alice` — replace with each developer name.
+
+```bash
+DEVELOPER="alice"
+
+gcloud run deploy ${NAME_PREFIX}-openclaw-brain-${DEVELOPER} \
+  --image "${AR_REPO}/openclaw:latest" \
+  --region $REGION --project $PROJECT_ID \
+  --service-account ${NAME_PREFIX}-openclaw-brain-${DEVELOPER}@${PROJECT_ID}.iam.gserviceaccount.com \
+  --execution-environment gen2 \
+  --no-allow-unauthenticated \
+  --vpc-egress all-traffic \
+  --network openclaw-run-vpc \
+  --subnet $SUBNET \
+  --scaling 1 \
+  --memory 2Gi --cpu 2 \
+  --set-secrets GATEWAY_AUTH_TOKEN=${GATEWAY_SECRET}:latest,LITELLM_MASTER_KEY=${LITELLM_KEY_SECRET}:latest \
+  --add-volume name=workspace,type=cloud-storage,bucket=${PROJECT_ID}-${NAME_PREFIX}-openclaw-workspace-${DEVELOPER} \
+  --add-volume-mount volume=workspace,mount-path=/app/workspace \
+  --set-env-vars "DEVELOPER=${DEVELOPER},VERTEXAI_PROJECT=${PROJECT_ID},LITELLM_BASE_URL=${LITELLM_URL}/v1"
+```
+
+> **Multiple developers:** Wrap the deploy in a loop:
+> ```bash
+> for DEVELOPER in alice bob; do
+>   gcloud run deploy ${NAME_PREFIX}-openclaw-brain-${DEVELOPER} \
+>     --image "${AR_REPO}/openclaw:latest" \
+>     --region $REGION --project $PROJECT_ID \
+>     --service-account ${NAME_PREFIX}-openclaw-brain-${DEVELOPER}@${PROJECT_ID}.iam.gserviceaccount.com \
+>     --execution-environment gen2 \
+>     --no-allow-unauthenticated \
+>     --vpc-egress all-traffic \
+>     --network openclaw-run-vpc \
+>     --subnet $SUBNET \
+>     --scaling 1 \
+>     --memory 2Gi --cpu 2 \
+>     --set-secrets GATEWAY_AUTH_TOKEN=${GATEWAY_SECRET}:latest,LITELLM_MASTER_KEY=${LITELLM_KEY_SECRET}:latest \
+>     --add-volume name=workspace,type=cloud-storage,bucket=${PROJECT_ID}-${NAME_PREFIX}-openclaw-workspace-${DEVELOPER} \
+>     --add-volume-mount volume=workspace,mount-path=/app/workspace \
+>     --set-env-vars "DEVELOPER=${DEVELOPER},VERTEXAI_PROJECT=${PROJECT_ID},LITELLM_BASE_URL=${LITELLM_URL}/v1"
+> done
+> ```
 
 [Back to top](#table-of-contents)
 
-### Step 6: Verify
+### Step 7: Verify
 
 ```bash
 export PROJECT_ID="my-gcp-project"
@@ -444,12 +519,12 @@ gcloud alpha run services ssh run-openclaw-brain-alice \
 
 # Verify GCS FUSE workspace mount
 gcloud alpha run services ssh run-openclaw-brain-alice \
-  --region $REGION --project $PROJECT_ID <<< 'ls /workspace'
+  --region $REGION --project $PROJECT_ID <<< 'ls /app/workspace'
 ```
 
 [Back to top](#table-of-contents)
 
-### Step 7: Approve Node Host Pairing (only if `exec_vms` is non-empty)
+### Step 8: Approve Node Host Pairing (only if `exec_vms` is non-empty)
 
 Wait 3–5 minutes for the VM startup script to install OpenClaw and start node hosts. Each node host will attempt to connect to its developer's gateway pod and request pairing approval.
 
@@ -609,16 +684,16 @@ gcloud alpha run services ssh run-openclaw-brain-alice \
 ```bash
 # Write a file to alice's GCS workspace
 gcloud alpha run services ssh run-openclaw-brain-alice \
-  --region $REGION --project $PROJECT_ID <<< 'echo "alice-private" > /workspace/secret.txt'
+  --region $REGION --project $PROJECT_ID <<< 'echo "alice-private" > /tmp/secret.txt'
 
 # Verify bob cannot see it (separate GCS bucket)
 gcloud alpha run services ssh run-openclaw-brain-bob \
-  --region $REGION --project $PROJECT_ID <<< 'cat /workspace/secret.txt 2>&1'
+  --region $REGION --project $PROJECT_ID <<< 'cat /tmp/secret.txt 2>&1'
 # Expected: "No such file or directory"
 
 # Verify alice can still read it
 gcloud alpha run services ssh run-openclaw-brain-alice \
-  --region $REGION --project $PROJECT_ID <<< 'cat /workspace/secret.txt'
+  --region $REGION --project $PROJECT_ID <<< 'cat /tmp/secret.txt'
 # Expected: "alice-private"
 ```
 
@@ -629,7 +704,7 @@ gcloud alpha run services ssh run-openclaw-brain-alice \
 ```bash
 # Write a marker file to alice's GCS FUSE workspace
 gcloud alpha run services ssh run-openclaw-brain-alice \
-  --region $REGION --project $PROJECT_ID <<< 'echo "persist-test" > /workspace/marker.txt'
+  --region $REGION --project $PROJECT_ID <<< 'echo "persist-test" > /app/workspace/marker.txt'
 
 # Deploy a new revision (simulates a container restart)
 gcloud run services update run-openclaw-brain-alice \
@@ -638,7 +713,7 @@ gcloud run services update run-openclaw-brain-alice \
 
 # Verify the file survived (GCS FUSE persists across revisions)
 gcloud alpha run services ssh run-openclaw-brain-alice \
-  --region $REGION --project $PROJECT_ID <<< 'cat /workspace/marker.txt'
+  --region $REGION --project $PROJECT_ID <<< 'cat /app/workspace/marker.txt'
 # Expected: "persist-test"
 ```
 
@@ -833,7 +908,7 @@ Each node host must be paired with its developer's gateway pod before it can exe
 
 1. VM startup script installs OpenClaw, fetches the gateway token, and starts per-developer node hosts
 2. Each node host connects to its developer's ILB and sends a pairing request
-3. The developer approves the request via TUI or CLI (see [Step 7](#step-7-approve-node-host-pairing-only-if-exec_vms-is-non-empty) in the Deployment Guide)
+3. The developer approves the request via TUI or CLI (see [Step 8](#step-8-approve-node-host-pairing-only-if-exec_vms-is-non-empty) in the Deployment Guide)
 4. The node host reconnects and is fully operational
 
 After initial pairing, the node host identity is persisted on the VM. Subsequent reconnections (e.g., after pod restart) reuse the same identity and do not require re-approval — unless the VM is reprovisioned or identity files are deleted.
@@ -884,7 +959,7 @@ exec_vms = {
 terraform apply
 ```
 
-Terraform will create the new VM, install OpenClaw via the startup script, and start per-developer node hosts. You will need to approve pairing for each new node host (see [Step 7](#step-7-approve-node-host-pairing-only-if-exec_vms-is-non-empty)).
+Terraform will create the new VM, install OpenClaw via the startup script, and start per-developer node hosts. You will need to approve pairing for each new node host (see [Step 8](#step-8-approve-node-host-pairing-only-if-exec_vms-is-non-empty)).
 
 ### Removing Stale Nodes
 

@@ -68,3 +68,8 @@ output "secrets_configured" {
     var.brave_api_key != "" ? [google_secret_manager_secret.brave_api_key[0].secret_id] : []
   )
 }
+
+output "name_prefix" {
+  description = "Cloud resource name prefix."
+  value       = var.name_prefix
+}
