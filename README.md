@@ -429,13 +429,14 @@ gcloud run deploy ${NAME_PREFIX}-openclaw-litellm \
   --region $REGION --project $PROJECT_ID \
   --service-account ${NAME_PREFIX}-openclaw-litellm@${PROJECT_ID}.iam.gserviceaccount.com \
   --execution-environment gen2 \
+  --port 4000 \
   --no-allow-unauthenticated \
   --ingress internal \
   --vpc-egress all-traffic \
   --network openclaw-run-vpc \
   --subnet $SUBNET \
   --scaling 1 \
-  --memory 512Mi --cpu 1 \
+  --memory 1Gi --cpu 1 \
   --set-secrets LITELLM_MASTER_KEY=${LITELLM_KEY_SECRET}:latest
 
 # Capture the service URL for use in brain service deployments
@@ -456,6 +457,7 @@ gcloud run deploy ${NAME_PREFIX}-openclaw-brain-${DEVELOPER} \
   --region $REGION --project $PROJECT_ID \
   --service-account ${NAME_PREFIX}-openclaw-brain-${DEVELOPER}@${PROJECT_ID}.iam.gserviceaccount.com \
   --execution-environment gen2 \
+  --port 18789 \
   --no-allow-unauthenticated \
   --vpc-egress all-traffic \
   --network openclaw-run-vpc \
@@ -477,6 +479,7 @@ gcloud run deploy ${NAME_PREFIX}-openclaw-brain-${DEVELOPER} \
 >     --region $REGION --project $PROJECT_ID \
 >     --service-account ${NAME_PREFIX}-openclaw-brain-${DEVELOPER}@${PROJECT_ID}.iam.gserviceaccount.com \
 >     --execution-environment gen2 \
+>     --port 18789 \
 >     --no-allow-unauthenticated \
 >     --vpc-egress all-traffic \
 >     --network openclaw-run-vpc \
