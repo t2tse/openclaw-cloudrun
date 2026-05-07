@@ -1,13 +1,13 @@
-# OpenClaw on GCP — Multi-Tenant GKE with Sandbox Isolation
+# OpenClaw on GCP — Cloud Run with MicroVM Sandbox Isolation
 
-Deploy [OpenClaw](https://docs.openclaw.ai) on Google Cloud with sandbox isolation (Kata Containers on GKE Standard, or gVisor on GKE Autopilot), and Vertex AI — fully managed by Terraform. Optionally add execution VMs (Windows/Linux) for OS-native command execution.
+Deploy [OpenClaw](https://docs.openclaw.ai) on Google Cloud using **Cloud Run** with MicroVM sandbox isolation (2nd-generation execution environment), GCS FUSE workspace mounts, Direct VPC Egress, and Vertex AI — fully managed by Terraform. Each developer gets an isolated Cloud Run service, GCS bucket, and service account. Optionally add execution VMs (Windows/Linux) for OS-native command execution.
 
 ---
 
 ## Table of Contents
 
 - [Architecture](#architecture)
-- [Sandbox Runtime Options](#sandbox-runtime-options)
+- [Execution Environment Options](#execution-environment-options)
 - [Security Features](#security-features)
 - [Deployment Guide](#deployment-guide)
 - [End-to-End Testing](#end-to-end-testing)
@@ -28,91 +28,88 @@ Deploy [OpenClaw](https://docs.openclaw.ai) on Google Cloud with sandbox isolati
 
 [Back to top](#table-of-contents)
 
-### Default: GKE-Only (no execution VM)
+### Default: Cloud Run Only (no execution VM)
 
 ```mermaid
 graph TD
-    Dev["Developer (kubectl / TUI)"]
+    Dev["Developer (gcloud CLI / TUI)"]
 
-    Dev -->|"IAP TCP Tunnel"| GKE
+    Dev -->|"gcloud alpha run services ssh"| CR
 
     subgraph GCP["GCP Project"]
 
-        subgraph GKE["GKE (Standard: kata-clh  |  Autopilot: gvisor)"]
-            subgraph NS["Namespace: openclaw"]
+        subgraph CR["Cloud Run (gen2 — seccomp hardened)"]
 
-                subgraph PodA["Pod: openclaw-brain-alice"]
-                    direction LR
-                    GA["OpenClaw Gateway\n(:18789)"]
-                end
-
-                subgraph PodB["Pod: openclaw-brain-bob"]
-                    direction LR
-                    GB["OpenClaw Gateway\n(:18789)"]
-                end
-
-                LITELLM["LiteLLM Proxy\n(:4000)"]
-
-                PodA -.-|"mount"| PVCA["PVC alice (10Gi)"]
-                PodB -.-|"mount"| PVCB["PVC bob (10Gi)"]
-
-                GA -->|"localhost:4000"| LITELLM
-                GB -->|"localhost:4000"| LITELLM
-
-                KSA["K8s SA: openclaw-brain"]
-                PodA -.- KSA
-                PodB -.- KSA
+            subgraph SvcA["Service: run-openclaw-brain-alice"]
+                direction LR
+                GA["OpenClaw Gateway\n(:18789)"]
             end
+
+            subgraph SvcB["Service: run-openclaw-brain-bob"]
+                direction LR
+                GB["OpenClaw Gateway\n(:18789)"]
+            end
+
+            LITELLM["LiteLLM Proxy\n(:4000)"]
+
+            SvcA -.-|"GCS FUSE mount"| GCSA["GCS Bucket: alice-workspace"]
+            SvcB -.-|"GCS FUSE mount"| GCSB["GCS Bucket: bob-workspace"]
+
+            GA -->|"internal URL :4000"| LITELLM
+            GB -->|"internal URL :4000"| LITELLM
+
+            SA_A["SA: openclaw-brain-alice@"]
+            SA_B["SA: openclaw-brain-bob@"]
+            SvcA -.- SA_A
+            SvcB -.- SA_B
         end
 
-        KSA -->|"Workload Identity"| GSA["GCP SA: openclaw-brain@"]
-        GSA -->|"roles/aiplatform.user"| Vertex["Vertex AI\nGemini Models"]
+        SA_A -->|"roles/aiplatform.user"| Vertex["Vertex AI\nGemini Models"]
+        SA_B -->|"roles/aiplatform.user"| Vertex
         LITELLM -->|"Workload Identity\nNo API Keys"| Vertex
 
         SM["Secret Manager\n(gateway-token, brave-key)"]
-        SM -.-|"mount as env"| NS
+        SM -.-|"mount as env"| CR
 
         subgraph Ops["Operations"]
             direction LR
             Logging["Cloud Logging"]
-            GCS["GCS Log Bucket"]
+            GCSLog["GCS Log Bucket"]
             Mon["Monitoring\nDashboard + Alerts"]
-            Logging --> GCS
+            Logging --> GCSLog
             Logging --> Mon
         end
 
-        GKE -->|"pod logs"| Logging
+        CR -->|"stdout/stderr"| Logging
 
-        AR["Artifact Registry"] -->|"pull image"| GKE
+        AR["Artifact Registry"] -->|"pull image"| CR
 
-        subgraph Net["VPC Network"]
+        subgraph Net["VPC Network (Direct VPC Egress)"]
             direction LR
             NAT["Cloud NAT\n(outbound only)"]
-            FW["Deny-all ingress\n+ IAP SSH only"]
+            FW["Deny-all ingress\n+ Cloud Run SSH only"]
         end
 
-        GKE --- Net
+        CR --- Net
     end
 ```
 
-### With Execution VM (`enable_exec_vm = true`)
+### With Execution VM (`exec_vms` non-empty)
 
 ```mermaid
 graph TD
-    Dev["Developer (kubectl / TUI)"]
+    Dev["Developer (gcloud CLI / TUI)"]
 
-    Dev -->|"IAP TCP Tunnel"| GCP
+    Dev -->|"gcloud alpha run services ssh"| GCP
 
     subgraph GCP["GCP Project"]
 
-        subgraph GKE["GKE (Standard: kata-clh  |  Autopilot: gvisor)"]
-            subgraph NS["Namespace: openclaw"]
-                PodA["Pod: openclaw-brain-alice\n(gateway :18789)"]
-                PodB["Pod: openclaw-brain-bob\n(gateway :18789)"]
-                LITELLM["LiteLLM Proxy\n(:4000)"]
-                PodA --> LITELLM
-                PodB --> LITELLM
-            end
+        subgraph CR["Cloud Run (gen2)"]
+            SvcA["Service: run-openclaw-brain-alice\n(gateway :18789)"]
+            SvcB["Service: run-openclaw-brain-bob\n(gateway :18789)"]
+            LITELLM["LiteLLM Proxy\n(:4000)"]
+            SvcA --> LITELLM
+            SvcB --> LITELLM
         end
 
         subgraph VM["Execution VMs (Shielded, No Public IP)"]
@@ -122,24 +119,24 @@ graph TD
             OPS["Ops Agent\n(journald / Event Log)"]
         end
 
-        PodA <-->|"ILB (TLS :18789)"| NH_A
-        PodB <-->|"ILB (TLS :18789)"| NH_B
+        SvcA <-->|"Direct VPC Egress (TLS :18789)"| NH_A
+        SvcB <-->|"Direct VPC Egress (TLS :18789)"| NH_B
 
         LITELLM -->|"Workload Identity"| Vertex["Vertex AI\nGemini Models"]
 
-        SM["Secret Manager"] --> GKE
+        SM["Secret Manager"] --> CR
         SM --> VM
 
         subgraph Ops["Operations"]
             direction LR
             Logging["Cloud Logging"]
-            GCS["GCS Log Bucket"]
+            GCSLog["GCS Log Bucket"]
             Mon["Dashboard + Alerts"]
-            Logging --> GCS
+            Logging --> GCSLog
             Logging --> Mon
         end
 
-        GKE -->|"stdout/stderr"| Logging
+        CR -->|"stdout/stderr"| Logging
         OPS -->|"node host logs"| Logging
 
         subgraph Net["VPC Network"]
@@ -147,7 +144,7 @@ graph TD
             FW["Firewall Rules"]
         end
 
-        GKE --- Net
+        CR --- Net
         VM --- Net
     end
 ```
@@ -155,59 +152,55 @@ graph TD
 ### Component Overview
 
 | Component | Purpose |
-|-----------|---------|
-| **GKE Standard + Kata** | Managed Kubernetes (Standard mode) with VM-level pod isolation via Kata Containers (`sandbox_runtime = "kata"`) |
-| **GKE Autopilot + gVisor** | Fully-managed Kubernetes (Autopilot mode) with user-space kernel isolation via gVisor (`sandbox_runtime = "gvisor"`) |
+|-----------|---------| 
+| **Cloud Run (gen2)** | Fully-managed, serverless containers with seccomp syscall filtering for sandbox-level isolation — no cluster management |
+| **Direct VPC Egress** | Cloud Run services egress directly into the VPC subnet — enabling private VM connectivity without a serverless VPC connector |
 | **LiteLLM Proxy** | Routes LLM requests to Vertex AI Gemini models via Workload Identity — no API keys |
-| **Workload Identity** | Maps K8s ServiceAccount to GCP SA — no service account keys stored anywhere |
-| **Per-Developer Pods** | Each developer gets an isolated pod + PVC with their own OpenClaw gateway instance |
+| **Per-Developer Service Accounts** | Each developer's Cloud Run service runs under its own GCP SA — strict IAM isolation between developers |
+| **Per-Developer GCS Workspaces** | Each developer gets a dedicated GCS bucket mounted via GCS FUSE — isolated, persistent across revisions |
 | **Execution VM** *(optional)* | Windows or Linux VM for OS-native command execution (PowerShell, CMD, bash) |
-| **Node Hosts** *(optional)* | Per-developer `openclaw node run` processes on VMs, connecting to gateway pods over TLS WebSocket |
-| **Internal Load Balancers** *(optional)* | Per-developer ILBs for VM-to-GKE connectivity |
+| **Node Hosts** *(optional)* | Per-developer `openclaw node run` processes on VMs, connecting to Cloud Run services over TLS WebSocket |
 | **Cloud Monitoring** | Dashboard with 7 tiles, alert policies for crashes, disconnections, and exec denials |
 | **Cloud Logging** | Logs routed to GCS with lifecycle policies (90d Nearline, 365d Coldline) |
+
 
 [Back to top](#table-of-contents)
 
 ---
 
-## Sandbox Runtime Options
+## Execution Environment Options
 
 [Back to top](#table-of-contents)
 
-OpenClaw supports two pod sandbox runtimes, selectable via the `sandbox_runtime` variable. **Each runtime deploys a different GKE cluster mode:**
+Cloud Run supports two execution environments, selectable via `execution_environment`. Both run the same container image — no cluster or node changes required:
 
-| | `kata` (default) | `gvisor` |
+| | `gen2` (default) | `gen1` |
 |---|---|---|
-| **GKE cluster mode** | **Standard** | **Autopilot** |
-| **Node pool** | `kata-pool` (user-managed) | Managed by Autopilot |
-| **RuntimeClass** | `kata-clh` | `gvisor` |
-| **Isolation model** | Lightweight VM per pod (KVM/QEMU) | User-space kernel (syscall interception) |
-| **Machine type** | N2 series (nested virtualization required) | Managed by Autopilot |
-| **Node image** | `UBUNTU_CONTAINERD` | Managed by Autopilot |
-| **Extra setup** | kata-deploy Helm chart + DaemonSet | None (Autopilot supports gVisor natively) |
-| **Secure Boot** | Disabled (unsigned kernel modules) | Enabled |
-| **Overhead** | ~256 MB RAM + VM startup latency | Lower overhead, no VM boot |
+| **Sandbox** | MicroVM (recommended) | gVisor |
+| **Isolation** | seccomp syscall filtering + Sandbox2 Linux namespace isolation | User-space kernel (syscall interception via `runsc`) |
+| **Compatibility** | Best — supports GCS FUSE, broader syscall surface | Good — some syscalls unsupported |
+| **Cold start** | Slightly higher | Lower |
+| **Switching** | Change `execution_environment` variable + redeploy | Same |
 
-### Choosing a Runtime
+### Choosing an Environment
 
-**Use `kata`** when you need the strongest isolation boundary (hardware-enforced VM per pod). Required if you are running untrusted code that must be fully kernel-isolated.
+**Use `gen2`** (default) — recommended for compatibility. GCS FUSE requires gen2. Best choice unless you have a specific reason to use gen1.
 
-**Use `gvisor`** when you want simpler setup, fully managed nodes, and can accept a user-space syscall-filtering boundary. Autopilot manages all node provisioning automatically — no node pools, machine types, or Helm charts to configure.
+**Use `gen1`** only if you experience gen2 compatibility issues (e.g., specific syscall requirements).
 
-### Configuring the Runtime
+### Configuring the Environment
 
 In `terraform.tfvars`:
 
 ```hcl
-# Option 1: Kata Containers — GKE Standard cluster (default)
-sandbox_runtime = "kata"
+# Option 1: MicroVM sandbox — gen2 (default, recommended)
+execution_environment = "gen2"
 
-# Option 2: gVisor — GKE Autopilot cluster
-sandbox_runtime = "gvisor"
+# Option 2: gVisor — gen1
+execution_environment = "gen1"
 ```
 
-Only one cluster is provisioned at a time. Switching runtimes on an existing deployment requires destroying and re-creating the cluster — plan for downtime accordingly.
+Changing `execution_environment` triggers a Cloud Run service revision — no downtime, traffic shifts automatically.
 
 [Back to top](#table-of-contents)
 
@@ -219,34 +212,31 @@ Only one cluster is provisioned at a time. Switching runtimes on an existing dep
 
 ### Sandbox Isolation
 
-Every OpenClaw brain pod runs inside a sandbox runtime — either Kata Containers (Standard cluster) or gVisor (Autopilot cluster) — selected at deploy time via `sandbox_runtime`.
+Every OpenClaw brain service runs inside a Cloud Run sandbox — gen2 (MicroVM, default) or gen1 (gVisor) — set via `execution_environment`.
 
-#### Kata Containers (`sandbox_runtime = "kata"`) — GKE Standard
+#### gen2 — MicroVM Sandbox (default)
 
-Every pod runs inside a [Kata Container](https://katacontainers.io/) providing full VM isolation via [nested virtualization](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/nested-virtualization) on N2 nodes:
+- **seccomp syscall filtering** — Limits the syscalls available to the container.
+- **Sandbox2 Linux namespace isolation** — Additional namespace-level isolation beyond standard containers.
+- **GCS FUSE support** — Required for workspace bucket mounts.
+- **Recommended** for best compatibility and isolation.
 
-- **Full kernel isolation** — Each pod gets its own guest kernel. Even if OpenClaw executes malicious code, it cannot reach the host kernel.
-- **Hardware-enforced boundary** — KVM/QEMU provides a true VM boundary, stronger than syscall filtering.
-- **Explicit opt-in** — Pods use `runtimeClassName: kata-clh`, installed via the kata-deploy Helm chart.
+#### gen1 — gVisor
 
-#### gVisor (`sandbox_runtime = "gvisor"`) — GKE Autopilot
+- **User-space kernel** — `runsc` intercepts Linux syscalls before they reach the host kernel.
+- **Lower cold-start overhead** — No MicroVM boot sequence.
+- Use when gen2 causes compatibility issues.
 
-Every pod runs under [gVisor](https://gvisor.dev/) on a fully-managed GKE Autopilot cluster:
-
-- **Syscall interception** — The `runsc` runtime intercepts all Linux syscalls before they reach the host kernel, significantly reducing the attack surface.
-- **No VM overhead** — gVisor runs in user-space; no VM boot, lower memory overhead (~50–80 MB vs ~256 MB for Kata).
-- **Zero node management** — GKE Autopilot provisions and manages all nodes automatically. No node pools, machine types, or OS images to configure.
-- **Native Autopilot support** — Pods use `runtimeClassName: gvisor`; Autopilot automatically schedules them on gVisor-capable nodes. No Helm chart needed.
-
-### Zero API Keys in the Cluster
+### Zero API Keys
 
 The authentication chain uses identity federation — no API key secrets exist:
 
 ```
-Pod → K8s ServiceAccount → Workload Identity → GCP Service Account → Vertex AI
+Cloud Run Service → GCP Service Account → Vertex AI
 ```
 
 - LiteLLM uses Application Default Credentials via the metadata server.
+- Each developer's service has its own dedicated service account — no shared identity.
 - Tokens are automatically refreshed — no key rotation needed.
 - The only secrets stored are the gateway auth token (auto-generated) and optional Brave API key.
 
@@ -254,20 +244,19 @@ Pod → K8s ServiceAccount → Workload Identity → GCP Service Account → Ver
 
 | Control | Implementation |
 |---------|---------------|
-| Private GKE nodes | Nodes have no public IPs |
-| Cloud NAT | Outbound-only internet access for pulling images and calling Vertex AI |
-| Deny-all ingress firewall | Only IAP SSH (`35.235.240.0/20`) and VM-to-GKE (`:18789`) allowed |
-| Master authorized networks | Control plane restricted to GKE/VM subnets + explicitly listed CIDRs |
-| Per-developer PVC isolation | Each developer's data is on a separate PersistentVolumeClaim |
-| VPC flow logs | Enabled on GKE subnet with full metadata |
+| Direct VPC Egress | All Outbound traffic routed through private VPC subnet |
+| Cloud NAT | Outbound-only internet for image pulls and Vertex AI |
+| Deny-all ingress firewall | Only IAP SSH (`35.235.240.0/20`) and exec-VM-to-service allowed |
+| Per-developer GCS isolation | Each developer's workspace is a separate GCS bucket; cross-access not granted |
+| Per-developer SA | Each service has its own SA — compromise of one does not affect others |
 
 ### IAM Least Privilege
 
 | Service Account | Roles | Purpose |
 |----------------|-------|---------|
-| `openclaw-brain` | `aiplatform.user`, `logging.logWriter`, `monitoring.metricWriter` | Pod workload identity |
-| `openclaw-exec-vm` | `logging.logWriter`, `monitoring.metricWriter` | VM log/metric shipping |
-| Per-secret IAM | `secretmanager.secretAccessor` | Individual secret bindings, not project-wide |
+| `run-openclaw-brain-{dev}` | `aiplatform.user`, `logging.logWriter`, `monitoring.metricWriter`, `storage.objectAdmin` (own bucket only), `secretmanager.secretAccessor` | Per-developer Cloud Run SA |
+| `run-openclaw-exec-vm` | `logging.logWriter`, `monitoring.metricWriter` | VM log/metric shipping |
+| `run-openclaw-cloudbuild` | `artifactregistry.writer`, `storage.objectAdmin`, `logging.logWriter` | Cloud Build image push |
 
 ### Application Security
 
@@ -275,19 +264,18 @@ Pod → K8s ServiceAccount → Workload Identity → GCP Service Account → Ver
 |-------|-----------|
 | **TLS + fingerprint pinning** | Self-signed ECDSA P256 cert, SHA256 fingerprint validated by node hosts |
 | **Token authentication** | All WebSocket connections require `OPENCLAW_GATEWAY_TOKEN` from Secret Manager |
-| **Non-root containers** | UID 10001, enforced by `runAsNonRoot: true` |
-| **Shielded VMs** | Secure Boot, vTPM, Integrity Monitoring on GKE nodes and execution VMs |
+| **Non-root containers** | UID 10001, non-root enforced in Dockerfile |
 | **Container scanning** | `containerscanning.googleapis.com` enabled on Artifact Registry |
 | **Pinned LiteLLM image** | SHA256 digest, not mutable tag |
-| **Cluster deletion protection** | `deletion_protection = true` |
+| **max-instances = 1** | Each developer service capped at 1 instance — no horizontal scaling of sessions |
 
 ### Device Auth Design Decision
 
 This deployment sets `dangerouslyDisableDeviceAuth: true` — a deliberate choice for headless/server deployments, **not** a security oversight.
 
-**Why:** With device auth enabled, every WebSocket connection requires interactive pairing approval. In a headless GKE deployment there is no UI to approve the first operator pairing — creating a chicken-and-egg problem.
+**Why:** With device auth enabled, every WebSocket connection requires interactive pairing approval. In a headless Cloud Run deployment there is no UI to approve the first operator pairing — creating a chicken-and-egg problem.
 
-**Why it is still secure:** The gateway sits on a private ILB (`10.10.0.0/24`), all connections require the gateway auth token from Secret Manager, and VPC firewall rules restrict access to pods and VMs on the VPC. For channel-level access control (e.g., Telegram), use `dmPolicy: "pairing"` on each channel.
+**Why it is still secure:** All connections require the gateway auth token from Secret Manager. VPC firewall rules restrict access. For channel-level access control (e.g., Telegram), use `dmPolicy: "pairing"` on each channel.
 
 > **Warning:** Never set `dangerouslyDisableDeviceAuth: false` in headless deployments — it will permanently lock out all connections if pairing data is lost.
 
@@ -303,26 +291,12 @@ This deployment sets `dangerouslyDisableDeviceAuth: true` — a deliberate choic
 
 - [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.5
 - [gcloud CLI](https://cloud.google.com/sdk/docs/install) authenticated with a project owner account
-- [kubectl](https://kubernetes.io/docs/tasks/tools/) installed
 - A GCP project with billing enabled
+- `gcloud components install alpha` (for Cloud Run SSH)
 
-### Step 1: Project Org Policy Update
+### Step 1: Project Org Policies
 
-#### Kata Containers only (`sandbox_runtime = "kata"`)
-
-Kata requires loading unsigned kernel modules for nested virtualization. These org policies must be relaxed:
-
-> Requires `roles/orgpolicy.policyAdmin` IAM role.
-
-```bash
-export PROJECT_ID="my-gcp-project"
-gcloud resource-manager org-policies disable-enforce compute.requireShieldedVm --project=$PROJECT_ID
-gcloud resource-manager org-policies disable-enforce compute.disableNestedVirtualization --project=$PROJECT_ID
-```
-
-#### gVisor (`sandbox_runtime = "gvisor"`)
-
-No org policy changes required. GKE Autopilot is a fully managed GKE feature — skip this step entirely.
+No org policy changes are required for Cloud Run.
 
 ### Step 2: Create the State Bucket
 
@@ -330,9 +304,8 @@ No org policy changes required. GKE Autopilot is a fully managed GKE feature —
 export PROJECT_ID="my-gcp-project"
 export TF_STATE_BUCKET_REGION="asia-southeast1"
 
-# Create Terraform state bucket
-gsutil mb -p "$PROJECT_ID" -l $TF_STATE_BUCKET_REGION "gs://${PROJECT_ID}-openclaw-gke-tf-state"
-gsutil versioning set on "gs://${PROJECT_ID}-openclaw-gke-tf-state"
+gsutil mb -p "$PROJECT_ID" -l $TF_STATE_BUCKET_REGION "gs://${PROJECT_ID}-openclaw-run-tf-state"
+gsutil versioning set on "gs://${PROJECT_ID}-openclaw-run-tf-state"
 ```
 
 [Back to top](#table-of-contents)
@@ -340,8 +313,8 @@ gsutil versioning set on "gs://${PROJECT_ID}-openclaw-gke-tf-state"
 ### Step 3: Clone and Configure
 
 ```bash
-git clone https://github.com/zken-cloud/openclaw-gke-kata.git
-cd openclaw-gke-kata
+git clone https://github.com/t2tse/openclaw-cloudrun.git
+cd openclaw-cloudrun
 ```
 
 Copy `terraform.tfvars.example` to `terraform.tfvars` and edit:
@@ -354,7 +327,7 @@ project_id = "my-gcp-project"
 region = "us-central1"
 zone   = "us-central1-c"
 
-# Developers / OpenClaw Users -- each gets an isolated OpenClaw pod + PVC
+# Developers / OpenClaw Users -- each gets an isolated OpenClaw service + GCS bucket
 developers = {
   "alice" = { active = true }
   "bob"   = { active = true }
@@ -365,16 +338,10 @@ openclaw_version = "latest"
 model_primary    = "litellm/gemini-3.1-pro-preview"
 model_fallbacks  = "[\"litellm/gemini-3.1-flash-lite-preview\"]"
 
-# Sandbox runtime — choose one:
-#   "kata"   — GKE Standard cluster, kata-pool (N2 nodes, kata-clh RuntimeClass, kata-deploy Helm chart)
-#   "gvisor" — GKE Autopilot cluster, gVisor RuntimeClass, no node pools or Helm chart needed
-sandbox_runtime = "kata"
-
-# GKE Control plane access (add your IP/CIDR)
-master_authorized_cidrs = {
-  "My IP"   = "YOUR_IP/32"
-  "My CIDR" = "YOUR_SUBNET/24"
-}
+# Execution environment -- choose one:
+#   "gen2" -- MicroVM sandbox (default, recommended; required for GCS FUSE)
+#   "gen1" -- gVisor (user-space kernel)
+execution_environment = "gen2"
 
 # Optional: Execution VMs (uncomment to enable)
 # exec_vms = {
@@ -404,56 +371,30 @@ export TF_VAR_brave_api_key=""       # optional
 ### Step 4: Deploy
 
 ```bash
-terraform init -backend-config="bucket=${PROJECT_ID}-openclaw-gke-tf-state"
+terraform init -backend-config="bucket=${PROJECT_ID}-openclaw-run-tf-state"
 terraform plan
 terraform apply
 ```
 
 This will:
 1. Enable all required GCP APIs
-2. Create VPC, subnet, Cloud NAT, firewall rules
-3. Create a GKE cluster based on the selected runtime:
-   - **`kata`** — GKE **Standard** cluster with N2 nodes, nested virtualization, and kata-deploy Helm chart
-   - **`gvisor`** — GKE **Autopilot** cluster; gVisor RuntimeClass available natively, no node pools to manage
-4. *(kata only)* Install Kata Containers via the kata-deploy Helm chart
-5. Deploy per-developer OpenClaw pods, PVCs, and ILB services
-6. Deploy LiteLLM proxy with Workload Identity
-7. Create Secret Manager secrets and IAM bindings
-8. Set up monitoring dashboard, alert policies, and log sink
-9. *(If `exec_vms` is non-empty)* Create execution VMs, subnet, firewall, and node hosts
+2. Create VPC (`openclaw-run-vpc`), subnet, Cloud NAT, firewall rules
+3. Create Artifact Registry repository and build the OpenClaw image via Cloud Build
+4. Create per-developer Cloud Run services with Direct VPC Egress and GCS FUSE workspace mounts
+5. Deploy the LiteLLM proxy service
+6. Create per-developer GCS workspace buckets
+7. Create per-developer service accounts with least-privilege IAM bindings
+8. Store secrets in Secret Manager
+9. Set up monitoring dashboard, alert policies, and log sink
+10. *(If `exec_vms` is non-empty)* Create execution VMs, subnet, firewall, and node hosts
 
-Deployment takes approximately 15–20 minutes (GKE cluster creation is the bottleneck).
+Deployment takes approximately 8–12 minutes (Cloud Build image build is the bottleneck).
 
-Note 1: If you see this error while Terraform is running, your client host is likely on a different GKE context. 
-Get cluster credentials in Step 6 would give you the correct GKE context and the control plane IP for Terraform to conenct to.
-```
-│ Error: Post "https://<Invalid GKE Control Plane IP>/api/v1/namespaces": dial tcp <Invalid GKE Control Plane IP>: i/o timeout
-│ 
-│   with kubernetes_namespace.openclaw,
-│   on kubernetes.tf line 1, in resource "kubernetes_namespace" "openclaw":
-│    1: resource "kubernetes_namespace" "openclaw" {
-│ 
-╵
-```
-
-Note 2: Sometimes there is race condition when executing the container image build while the IAM permission is propagating in the background. Run `terraform apply` once again to continue.
-```
- Error: local-exec provisioner error
-│ 
-│   with null_resource.build_openclaw_image,
-│   on storage.tf line 77, in resource "null_resource" "build_openclaw_image":
-│   77:   provisioner "local-exec" {
-│ 
-│ Error running command 'bash ./scripts/build_and_push.sh': exit status 1. Output: Building and pushing image using Cloud Build...
-│ Creating temporary archive of 100 file(s) totalling 395.5 KiB before compression.
-│ Uploading tarball of [.] to [gs://<PROJECT_ID>/source/<hex number>.tgz]
-│ ERROR: (gcloud.builds.submit) INVALID_ARGUMENT: could not resolve source: googleapi: Error 403: openclaw-cloudbuild@<PROJECT_ID>.iam.gserviceaccount.com does not have
-│ storage.objects.get access to the Google Cloud Storage object. Permission 'storage.objects.get' denied on resource (or it may not exist)., forbidden
-```
+> **Note:** If Cloud Build fails with a 403 on first run (IAM propagation race), run `terraform apply` again.
 
 [Back to top](#table-of-contents)
 
-### Step 5 (Optional): Build and Push the Container Image then Restart Pods.
+### Step 5 (Optional): Build and Push a Custom Container Image
 
 > **This step can be skipped** by default it uses the openclaw image built in the project Artifact Registry
 
@@ -464,8 +405,13 @@ export REGION="us-central1"
 ./scripts/build_and_push.sh
 ```
 
+Then redeploy each developer service to pick up the new image:
+
 ```bash
-kubectl rollout restart deployment -n openclaw -l component=brain
+# Redeploy alice's service (Cloud Run picks up the latest image tag)
+gcloud run services update run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID \
+  --image ${REGION}-docker.pkg.dev/${PROJECT_ID}/run-openclaw/openclaw:latest
 ```
 
 [Back to top](#table-of-contents)
@@ -473,59 +419,32 @@ kubectl rollout restart deployment -n openclaw -l component=brain
 ### Step 6: Verify
 
 ```bash
-# Get cluster credentials
+export PROJECT_ID="my-gcp-project"
 export REGION="us-central1"
 
-gcloud container clusters get-credentials openclaw-cluster \
-  --region $(terraform output -raw gke_cluster_region 2>/dev/null || echo $REGION) \
-  --project $PROJECT_ID
-
-# Check pods are running
-kubectl get pods -n openclaw
+# List Cloud Run services
+gcloud run services list --project $PROJECT_ID --region $REGION
 
 # Expected:
-# NAME                                    READY   STATUS    AGE
-# litellm-xxxxx                           1/1     Running   5m
-# openclaw-brain-alice-xxxxx              1/1     Running   5m
-# openclaw-brain-bob-xxxxx                1/1     Running   5m
+# SERVICE                     REGION       URL
+# run-openclaw-brain-alice    us-central1  https://run-openclaw-brain-alice-...
+# run-openclaw-brain-bob      us-central1  https://run-openclaw-brain-bob-...
+# run-litellm                 us-central1  https://run-litellm-...
 
-# Verify sandbox runtime is active
-kubectl get pods -n openclaw -o jsonpath='{range .items[*]}{.metadata.name}{" -> "}{.spec.runtimeClassName}{"\n"}{end}'
-# kata:   openclaw-brain-alice -> kata-clh
-# gvisor: openclaw-brain-alice -> gvisor
+# Verify execution environment
+gcloud run services describe run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID \
+  --format='value(spec.template.metadata.annotations[run.googleapis.com/execution-environment])'
+# Expected: gen2
 
-# Verify non-root
-kubectl exec -n openclaw deployment/openclaw-brain-alice -- id
+# SSH into the container and verify non-root user
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'id'
 # Expected: uid=10001(openclaw) gid=10001(openclaw)
-```
 
-#### Optional: Kata Containers — verify nested virtualization
-
-Confirm [nested virtualization is enabled](https://docs.cloud.google.com/compute/docs/instances/nested-virtualization/enabling#confirm_that_nested_virtualization_is_enabled_on_the_vm) on GKE Node:
-
-```bash
-# Connect to the GKE Node VM instance
-gcloud compute ssh "my-gke-node-vm-name"
-
-# Verify nested virtualization is enabled
-grep -cw vmx /proc/cpuinfo
-```
-
-If nested virtualization is disabled, brain pods will fail with:
-```
-openclaw-brain-alice, openclaw-brain-bob stuck at ContainerCreating
-Failed to create pod sandbox: rpc error: code = Unknown desc = failed to start sandbox "some-hex-number": failed to create containerd task: failed to create shim task: Could not create the sandbox resource controller failed to add any hypervisor device to devices cgroup	FailedCreatePodSandBox
-```
-
-#### Optional: gVisor — verify RuntimeClass (Autopilot)
-
-```bash
-# Confirm the gvisor RuntimeClass exists (registered automatically by Autopilot)
-kubectl get runtimeclass gvisor
-
-# Verify pod is using gVisor
-kubectl get pods -n openclaw -o jsonpath='{range .items[*]}{.metadata.name}{" -> "}{.spec.runtimeClassName}{"\n"}{end}'
-# Expected: openclaw-brain-alice -> gvisor
+# Verify GCS FUSE workspace mount
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'ls /workspace'
 ```
 
 [Back to top](#table-of-contents)
@@ -539,7 +458,9 @@ Wait 3–5 minutes for the VM startup script to install OpenClaw and start node 
 #### Option A: Approve via TUI
 
 ```bash
-kubectl exec -it -n openclaw deployment/openclaw-brain-alice -- npx openclaw tui
+# SSH into alice's Cloud Run service and launch the TUI
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'npx openclaw tui'
 ```
 
 Once in the TUI, you will see a pairing request notification. Type the approval command shown (e.g., `/approve <request-id> allow`).
@@ -548,10 +469,12 @@ Once in the TUI, you will see a pairing request notification. Type the approval 
 
 ```bash
 # List pending pairing requests
-kubectl exec -n openclaw deployment/openclaw-brain-alice -- npx openclaw nodes pending
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes pending'
 
 # Approve a pending request by ID
-kubectl exec -n openclaw deployment/openclaw-brain-alice -- npx openclaw nodes approve <REQUEST_ID>
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes approve <REQUEST_ID>'
 ```
 
 > **Tip:** The node host retries every 10 seconds. If `nodes pending` shows no requests, wait a moment and try again — the request may appear briefly between retries.
@@ -560,11 +483,13 @@ kubectl exec -n openclaw deployment/openclaw-brain-alice -- npx openclaw nodes a
 
 ```bash
 # Check alice's nodes
-kubectl exec -n openclaw deployment/openclaw-brain-alice -- npx openclaw nodes status
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes status'
 # Expected: linux-alice and/or windows-alice showing "paired · connected"
 
 # Check bob
-kubectl exec -n openclaw deployment/openclaw-brain-bob -- npx openclaw nodes status
+gcloud alpha run services ssh run-openclaw-brain-bob \
+  --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes status'
 ```
 
 [Back to top](#table-of-contents)
@@ -580,13 +505,12 @@ Step-by-step guide to verify every feature after deployment.
 ### Prerequisites
 
 ```bash
-# Ensure you have cluster access
-gcloud container clusters get-credentials openclaw-cluster \
-  --region $REGION --project $PROJECT_ID
+export PROJECT_ID="my-gcp-project"
+export REGION="us-central1"
 
-# Verify pods are running
-kubectl get pods -n openclaw
-# Expected: openclaw-brain-alice, openclaw-brain-bob, and litellm in Running state
+# Verify services are running
+gcloud run services list --project $PROJECT_ID --region $REGION
+# Expected: run-openclaw-brain-alice, run-openclaw-brain-bob, run-litellm in READY state
 ```
 
 [Back to top](#table-of-contents)
@@ -595,32 +519,32 @@ kubectl get pods -n openclaw
 
 ```bash
 # liveness check
-kubectl exec -n openclaw deployment/litellm -- node -e "fetch('http://localhost:4000/health/liveness').then(r => r.text()).then(console.log)"
+gcloud alpha run services ssh run-litellm \
+  --region $REGION --project $PROJECT_ID \
+  <<< "node -e \"fetch('http://localhost:4000/health/liveness').then(r => r.text()).then(console.log)\""
 
 # readiness check
-kubectl exec -n openclaw deployment/litellm -- node -e "fetch('http://localhost:4000/health/readiness').then(r => r.json()).then(console.log)"
+gcloud alpha run services ssh run-litellm \
+  --region $REGION --project $PROJECT_ID \
+  <<< "node -e \"fetch('http://localhost:4000/health/readiness').then(r => r.json()).then(console.log)\""
 ```
 
 Expected: `{"status":"ok"}`
 
 [Back to top](#table-of-contents)
 
-### Test 2: Sandbox Runtime Verification
+### Test 2: Sandbox / Execution Environment Verification
 
 ```bash
-# Verify RuntimeClass exists
-# kata:
-kubectl get runtimeclass kata-clh
-# gvisor:
-kubectl get runtimeclass gvisor
+# Verify execution environment annotation
+gcloud run services describe run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID \
+  --format='value(spec.template.metadata.annotations[run.googleapis.com/execution-environment])'
+# Expected: gen2
 
-# Verify pods use the configured sandbox
-kubectl get pods -n openclaw -o jsonpath='{range .items[*]}{.metadata.name}{" -> "}{.spec.runtimeClassName}{"\n"}{end}'
-# kata:   openclaw-brain-alice -> kata-clh
-# gvisor: openclaw-brain-alice -> gvisor
-
-# Verify kernel isolation (dmesg should be blocked under both runtimes)
-kubectl exec -n openclaw deployment/openclaw-brain-alice -- dmesg 2>&1 | head -5
+# Verify kernel isolation (dmesg should be blocked by seccomp in gen2)
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'dmesg 2>&1 | head -5'
 # Expected: "dmesg: read kernel buffer failed: Operation not permitted"
 ```
 
@@ -629,8 +553,9 @@ kubectl exec -n openclaw deployment/openclaw-brain-alice -- dmesg 2>&1 | head -5
 ### Test 3: OpenClaw TUI (Interactive)
 
 ```bash
-# Launch the TUI inside alice's pod
-kubectl exec -it -n openclaw deployment/openclaw-brain-alice -- npx openclaw tui
+# Launch the TUI inside alice's Cloud Run service
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'npx openclaw tui'
 ```
 
 In the TUI:
@@ -665,13 +590,14 @@ In the TUI:
 
 ```bash
 # Get alice's connected node ID
-ALICE_NODE=$(kubectl exec -n openclaw deployment/openclaw-brain-alice -- \
-  npx openclaw nodes status --json 2>/dev/null | jq -r '.nodes[] | select(.connected) | .id')
+ALICE_NODE=$(gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID \
+  <<< 'npx openclaw nodes status --json 2>/dev/null' | jq -r '.nodes[] | select(.connected) | .id')
 
 # Invoke a system command
-kubectl exec -n openclaw deployment/openclaw-brain-alice -- \
-  npx openclaw nodes invoke --node "$ALICE_NODE" \
-  --command system.which --params '{"bins":["cmd","powershell","node"]}'
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID \
+  <<< "npx openclaw nodes invoke --node \"$ALICE_NODE\" --command system.which --params '{\"bins\":[\"cmd\",\"powershell\",\"node\"]}'"
 
 # Expected: {"ok":true, "payload":{"bins":{"cmd":"C:\\Windows\\system32\\cmd.exe",...}}}
 ```
@@ -681,38 +607,38 @@ kubectl exec -n openclaw deployment/openclaw-brain-alice -- \
 ### Test 5: Multi-Developer Isolation
 
 ```bash
-# Write a file in alice's pod
-kubectl exec -n openclaw deployment/openclaw-brain-alice -- \
-  bash -c 'echo "alice-private" > /tmp/secret.txt'
+# Write a file to alice's GCS workspace
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'echo "alice-private" > /workspace/secret.txt'
 
-# Verify bob cannot see it
-kubectl exec -n openclaw deployment/openclaw-brain-bob -- \
-  cat /tmp/secret.txt 2>&1
+# Verify bob cannot see it (separate GCS bucket)
+gcloud alpha run services ssh run-openclaw-brain-bob \
+  --region $REGION --project $PROJECT_ID <<< 'cat /workspace/secret.txt 2>&1'
 # Expected: "No such file or directory"
 
 # Verify alice can still read it
-kubectl exec -n openclaw deployment/openclaw-brain-alice -- cat /tmp/secret.txt
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'cat /workspace/secret.txt'
 # Expected: "alice-private"
 ```
 
 [Back to top](#table-of-contents)
 
-### Test 6: PVC Persistence
+### Test 6: GCS FUSE Workspace Persistence
 
 ```bash
-# Write a marker file to the PVC mount
-kubectl exec -n openclaw deployment/openclaw-brain-alice -- \
-  bash -c 'echo "persist-test" > /app/workspace/marker.txt'
+# Write a marker file to alice's GCS FUSE workspace
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'echo "persist-test" > /workspace/marker.txt'
 
-# Delete the pod (deployment recreates it)
-kubectl delete pod -n openclaw -l developer=alice
+# Deploy a new revision (simulates a container restart)
+gcloud run services update run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID \
+  --update-env-vars RESTART_MARKER=$(date +%s)
 
-# Wait for new pod
-kubectl wait --for=condition=ready pod -n openclaw -l developer=alice --timeout=120s
-
-# Verify the file survived
-kubectl exec -n openclaw deployment/openclaw-brain-alice -- \
-  cat /app/workspace/marker.txt
+# Verify the file survived (GCS FUSE persists across revisions)
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'cat /workspace/marker.txt'
 # Expected: "persist-test"
 ```
 
@@ -723,7 +649,7 @@ kubectl exec -n openclaw deployment/openclaw-brain-alice -- \
 ```bash
 # Check logs are flowing to Cloud Logging
 gcloud logging read \
-  'resource.type="k8s_container" AND resource.labels.namespace_name="openclaw"' \
+  'resource.type="cloud_run_revision" AND resource.labels.service_name=~"run-openclaw-brain"' \
   --project=$PROJECT_ID --limit=5 --format='value(textPayload)'
 
 # Verify log sink exists
@@ -735,7 +661,7 @@ gcloud alpha monitoring policies list --project=$PROJECT_ID \
 ```
 
 Expected:
-- Recent log entries from OpenClaw pods
+- Recent log entries from OpenClaw Cloud Run services
 - Log sink pointing to a GCS bucket
 - Alert policies for CrashLoop, Node Disconnected, Exec Denied, and VM Node Host Failure
 
@@ -744,9 +670,10 @@ Expected:
 ### Test 8: Outbound Network Access
 
 ```bash
-kubectl exec -n openclaw deployment/openclaw-brain-alice -- \
-  node -e "fetch('https://www.google.com').then(r => console.log(r.status))"
-# Expected: 200 (Cloud NAT provides outbound access)
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID \
+  <<< "node -e \"fetch('https://www.google.com').then(r => console.log(r.status))\""
+# Expected: 200 (Cloud NAT provides outbound access via Direct VPC Egress)
 ```
 
 [Back to top](#table-of-contents)
@@ -772,14 +699,19 @@ OpenClaw supports 20+ channels including Telegram, WhatsApp, Slack, Discord, Sig
 #### 2. Add the Channel via CLI
 
 ```bash
-kubectl exec -n openclaw deploy/openclaw-brain-alice -- \
-  npx openclaw channels add --channel telegram --token "YOUR_BOT_TOKEN"
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID \
+  <<< 'npx openclaw channels add --channel telegram --token "YOUR_BOT_TOKEN"'
 ```
 
-#### 3. Restart the Pod
+#### 3. Apply Configuration
+
+Redeploy alice's service to pick up the new channel config:
 
 ```bash
-kubectl delete pod -n openclaw -l developer=alice
+gcloud run services update run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID \
+  --update-env-vars RELOAD=$(date +%s)
 ```
 
 #### 4. Approve Pairing
@@ -787,8 +719,9 @@ kubectl delete pod -n openclaw -l developer=alice
 Send a message to your bot on Telegram. The bot will reply with a **pairing code** and ask you to approve it. From your terminal, run:
 
 ```bash
-kubectl exec -n openclaw deploy/openclaw-brain-alice -- \
-  npx openclaw pairing approve telegram <PAIRING_CODE>
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID \
+  <<< 'npx openclaw pairing approve telegram <PAIRING_CODE>'
 ```
 
 Replace `<PAIRING_CODE>` with the code shown in the Telegram message.
@@ -802,8 +735,9 @@ Send another message to the bot. You should now receive a response from the Open
 To require pairing codes for all future Telegram conversations (recommended for production):
 
 ```bash
-kubectl exec -n openclaw deploy/openclaw-brain-alice -- \
-  npx openclaw config set channels.telegram.dmPolicy "pairing"
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID \
+  <<< 'npx openclaw config set channels.telegram.dmPolicy "pairing"'
 ```
 
 [Back to top](#table-of-contents)
@@ -812,25 +746,25 @@ kubectl exec -n openclaw deploy/openclaw-brain-alice -- \
 
 ```bash
 # List configured channels
-kubectl exec -n openclaw deploy/openclaw-brain-alice -- npx openclaw channels list
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'npx openclaw channels list'
 
 # Check channel status
-kubectl exec -n openclaw deploy/openclaw-brain-alice -- npx openclaw channels status
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'npx openclaw channels status'
 
 # Remove a channel
-kubectl exec -n openclaw deploy/openclaw-brain-alice -- npx openclaw channels remove --channel telegram
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'npx openclaw channels remove --channel telegram'
 
 # Check channel logs
-kubectl exec -n openclaw deploy/openclaw-brain-alice -- npx openclaw channels logs
-
-# Or use the Control UI via port-forward:
-kubectl port-forward -n openclaw svc/openclaw-gateway-alice 18789:18789
-# Then open http://localhost:18789
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'npx openclaw channels logs'
 ```
 
 ### Other Supported Channels
 
-OpenClaw supports 20+ channels beyond Telegram. Use `npx openclaw channels add --help` inside a pod to see all available options:
+OpenClaw supports 20+ channels beyond Telegram. Use `npx openclaw channels add --help` inside a service to see all available options:
 
 | Channel | Auth Method |
 |---------|-------------|
@@ -853,7 +787,7 @@ For full channel documentation, see the [OpenClaw Channels docs](https://docs.op
 
 [Back to top](#table-of-contents)
 
-By default, only the GKE brain pods are deployed (`exec_vms = {}`). To add execution VMs, define them in the `exec_vms` map:
+By default, only the Cloud Run brain services are deployed (`exec_vms = {}`). To add execution VMs, define them in the `exec_vms` map:
 
 ```hcl
 exec_vms = {
@@ -875,18 +809,17 @@ The OS type is auto-detected from the image name:
 
 When `exec_vms` is non-empty, Terraform creates:
 - A GCE VM per entry (no public IP, Shielded VM)
-- A shared subnet and firewall rule for VM-to-GKE connectivity
+- A shared subnet and firewall rule for VM-to-Cloud Run connectivity
 - A shared service account with logging/monitoring/Secret Manager access
-- Per-developer Internal Load Balancer services on GKE
 - Per-developer node host processes on each VM
 
 ### Data Flow: Agent Command Execution
 
 ```mermaid
 graph LR
-    A["Developer (TUI)"] --> B["OpenClaw Agent\n(Pod)"]
+    A["Developer (TUI)"] --> B["OpenClaw Agent\n(Cloud Run)"]
     B --> C["Gateway"]
-    C -->|"TLS WebSocket"| D["Node Host\n(Execution VM)"]
+    C -->|"TLS WebSocket\n(Direct VPC Egress)"| D["Node Host\n(Execution VM)"]
     D --> E["OS Commands"]
     E --> D
     D -->|"Result"| C
@@ -909,20 +842,25 @@ After initial pairing, the node host identity is persisted on the VM. Subsequent
 
 ```bash
 # List all paired nodes and their connection status
-kubectl exec -n openclaw deploy/openclaw-brain-alice -- npx openclaw nodes status
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes status'
 
 # List pending pairing requests
-kubectl exec -n openclaw deploy/openclaw-brain-alice -- npx openclaw nodes pending
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes pending'
 
 # Approve a pending node
-kubectl exec -n openclaw deploy/openclaw-brain-alice -- npx openclaw nodes approve <REQUEST_ID>
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes approve <REQUEST_ID>'
 
 # Reject a pending node
-kubectl exec -n openclaw deploy/openclaw-brain-alice -- npx openclaw nodes reject <REQUEST_ID>
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes reject <REQUEST_ID>'
 
 # Invoke a command on a connected node
-kubectl exec -n openclaw deploy/openclaw-brain-alice -- \
-  npx openclaw nodes invoke --node <NODE_ID> --command system.which --params '{"bins":["node"]}'
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID \
+  <<< 'npx openclaw nodes invoke --node <NODE_ID> --command system.which --params "{\"bins\":[\"node\"]}"'
 ```
 
 ### Adding New VMs
@@ -954,12 +892,17 @@ If nodes accumulate stale paired entries (e.g., after VM reprovisioning), clean 
 
 ```bash
 # List all paired nodes — note IDs of stale/disconnected entries
-kubectl exec -n openclaw deploy/openclaw-brain-alice -- npx openclaw nodes list
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes list'
 
-# Remove stale entries by deleting the pairing data and restarting the pod
-kubectl exec -n openclaw deploy/openclaw-brain-alice -- \
-  sh -c "rm -f ~/.openclaw/nodes/paired.json ~/.openclaw/devices/paired.json"
-kubectl delete pod -n openclaw -l developer=alice
+# Remove stale entries by deleting the pairing data and redeploying
+gcloud alpha run services ssh run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID \
+  <<< 'rm -f ~/.openclaw/nodes/paired.json ~/.openclaw/devices/paired.json'
+
+gcloud run services update run-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID \
+  --update-env-vars RELOAD=$(date +%s)
 ```
 
 Then re-approve the node hosts when they reconnect.
@@ -993,7 +936,7 @@ gcloud compute instances create openclaw-win-builder \
   --shielded-vtpm \
   --shielded-integrity-monitoring \
   --no-address \
-  --subnet=projects/$PROJECT_ID/regions/$REGION/subnetworks/openclaw-vpc-windows-subnet
+  --subnet=projects/$PROJECT_ID/regions/$REGION/subnetworks/openclaw-run-vpc-windows-subnet
 ```
 
 [Back to top](#table-of-contents)
@@ -1093,13 +1036,13 @@ All OpenClaw logs from pods and VMs are collected, stored, and monitored through
 ```mermaid
 graph LR
     subgraph Sources
-        POD["Gateway Pods\nstdout/stderr"]
+        SVC["Cloud Run Services\nstdout/stderr"]
         LINUX_VM["Linux VM\njournald"]
         WIN_VM["Windows VM\nEvent Log + File Logs"]
     end
 
     subgraph Collection
-        GKE_LOG["GKE Auto-shipping"]
+        CR_LOG["Cloud Run Auto-shipping"]
         OPS_LINUX["Ops Agent\n(systemd_journal)"]
         OPS_WIN["Ops Agent\n(windows_event_log + files)"]
     end
@@ -1115,7 +1058,7 @@ graph LR
         DASH["Operations Dashboard"]
     end
 
-    POD --> GKE_LOG --> CL
+    SVC --> CR_LOG --> CL
     LINUX_VM --> OPS_LINUX --> CL
     WIN_VM --> OPS_WIN --> CL
     CL -->|"Log Sink"| GCS
@@ -1127,7 +1070,7 @@ graph LR
 
 | Source | Mechanism | What's Collected |
 |--------|-----------|-----------------|
-| **Gateway pods** | GKE auto-ships stdout/stderr | Gateway startup, WebSocket activity, pairing, exec results, errors |
+| **Cloud Run services** | Cloud Run auto-ships stdout/stderr | Gateway startup, WebSocket activity, pairing, exec results, errors |
 | **Linux VM** | Ops Agent (`systemd_journal` receiver) | Node host connect/disconnect, exec output, restart events |
 | **Windows VM** | Ops Agent (`windows_event_log` + `files` receiver) | Node host output, scheduled task events, errors |
 
@@ -1144,9 +1087,9 @@ GCS lifecycle policies: 0–90 days Standard, 90–365 days Nearline, 365+ days 
 
 | Alert | Trigger | Meaning |
 |-------|---------|---------|
-| **Exec Approval Denied** | `SYSTEM_RUN_DENIED` in pod logs | Node host denied a command |
+| **Exec Approval Denied** | `SYSTEM_RUN_DENIED` in service logs | Node host denied a command |
 | **Node Host Disconnected** | `NOT_CONNECTED` >50 in 5 min | Stale paired nodes or VM down |
-| **Gateway CrashLoop** | `CrashLoopBackOff` in pod logs | Bad config, missing secrets |
+| **Service CrashLoop** | Repeated container exits in Cloud Run logs | Bad config, missing secrets |
 | **VM Node Host Failure** | `Node host exited` or `ERROR` >5 in 5 min | Node host process crashing |
 
 To enable alerts:
@@ -1162,7 +1105,7 @@ Access at: **Cloud Console → Monitoring → Dashboards → OpenClaw Operations
 
 | Panel | Shows |
 |-------|-------|
-| Gateway Pod Logs | All gateway pod logs (all developers) |
+| Gateway Service Logs | All Cloud Run gateway service logs (all developers) |
 | Execution VM Logs | All VM logs (Linux + Windows) |
 | Exec Denied Events | `SYSTEM_RUN_DENIED` events over time |
 | Node Disconnection Errors | `NOT_CONNECTED` errors over time |
@@ -1182,29 +1125,25 @@ Access at: **Cloud Console → Monitoring → Dashboards → OpenClaw Operations
 |----------|----------|---------|-------------|
 | `project_id` | Yes | — | GCP project ID |
 | `region` | No | `us-central1` | GCP region |
-| `zone` | No | `us-central1-c` | GCE instance zone |
-| `network_name` | No | `openclaw-vpc` | VPC network name |
-| `gke_subnet_cidr` | No | `10.10.0.0/24` | GKE subnet CIDR |
-| `gke_pods_cidr` | No | `10.100.0.0/16` | Secondary CIDR for pods |
-| `gke_services_cidr` | No | `10.101.0.0/16` | Secondary CIDR for services |
-| `gke_cluster_name` | No | `openclaw-cluster` | GKE cluster name |
-| `gke_machine_type` | No | `n2-standard-4` | GKE node machine type. N2 required for Kata; any type for gVisor |
-| `gke_node_count` | No | `1` | Nodes per zone |
-| `sandbox_runtime` | No | `kata` | Sandbox runtime: `"kata"` (kata-pool, kata-clh) or `"gvisor"` (gvisor-pool, GKE Sandbox) |
+| `zone` | No | `us-central1-c` | GCE instance zone (for exec VMs) |
+| `name_prefix` | No | `run` | Prefix for all resource names (e.g. `run-openclaw-*`) |
+| `network_name` | No | `openclaw-run-vpc` | VPC network name |
+| `cloudrun_subnet_cidr` | No | `10.10.0.0/24` | Cloud Run Direct VPC Egress subnet CIDR |
+| `execution_environment` | No | `gen2` | Cloud Run execution environment: `gen2` (recommended, seccomp hardening) or `gen1` |
 | **Execution VMs** | | | |
 | `exec_vms` | No | `{}` | Map of execution VMs to deploy |
 | `exec_vm_subnet_cidr` | No | `10.20.0.0/24` | VM subnet CIDR |
-| `master_authorized_cidrs` | No | `{}` | Additional CIDRs for GKE control plane access |
 | **Secrets** | | | |
 | `gateway_auth_token` | No | auto-generated | Gateway auth token (sensitive) |
 | `brave_api_key` | No | `""` | Brave Search API key (sensitive) |
 | **OpenClaw** | | | |
-| `sandbox_image` | No | `""` | Custom Docker image for brain pods |
+| `sandbox_image` | No | `""` | Custom Docker image for Cloud Run services |
 | `openclaw_version` | No | `latest` | OpenClaw npm package version |
 | `model_primary` | No | `litellm/gemini-3.1-pro-preview` | Primary LLM model |
 | `model_fallbacks` | No | `["litellm/gemini-3.1-flash-lite-preview"]` | Fallback models (JSON array) |
 | `developers` | No | `{"default" = {active = true}}` | Map of developer names to config |
-| `deployer_service_account` | No | `""` | SA email for IAP tunnel access |
+| `min_instances` | No | `1` | Minimum Cloud Run instances per service (set >0 to avoid cold starts) |
+| `max_instances` | No | `3` | Maximum Cloud Run instances per service |
 | **Monitoring** | | | |
 | `alert_email` | No | `""` | Email for operational alerts |
 | **Labels** | | | |
@@ -1220,8 +1159,8 @@ Access at: **Cloud Console → Monitoring → Dashboards → OpenClaw Operations
 
 | Output | Description |
 |--------|-------------|
-| `gke_cluster_name` | GKE cluster name |
-| `gke_cluster_endpoint` | GKE API server endpoint |
+| `cloudrun_service_urls` | Map of developer name → Cloud Run service URL |
+| `litellm_service_url` | LiteLLM Cloud Run service URL (internal) |
 | `exec_vms` | Map of execution VM names to instance name, IP, and OS image |
 | `artifact_registry_url` | Docker registry URL |
 | `gateway_token_secret` | Secret Manager resource for gateway token |
@@ -1235,19 +1174,17 @@ Access at: **Cloud Console → Monitoring → Dashboards → OpenClaw Operations
 ## File Structure
 
 [Back to top](#table-of-contents)
-
 ```
-openclaw-gke/
+openclaw-cloudrun/
+
 ├── main.tf                    # Providers, backend, API enablement
-├── gke.tf                     # GKE cluster + kata-pool / gvisor-pool (conditional)
-├── network.tf                 # VPC, subnet, Cloud NAT, firewalls
-├── iam.tf                     # Service accounts, Workload Identity, IAM
-├── storage.tf                 # Artifact Registry, Cloud Build, Secret Manager
-├── kubernetes.tf              # Namespace, deployments, PVCs, services
+├── cloudrun.tf                # Cloud Run services (per-developer brain + LiteLLM)
+├── network.tf                 # VPC, subnet (Direct VPC Egress), Cloud NAT, firewalls
+├── iam.tf                     # Per-developer service accounts, Secret Manager IAM
+├── storage.tf                 # Artifact Registry, Cloud Build, Secret Manager, GCS workspaces
 ├── logging.tf                 # Monitoring dashboard, alerts, log sink
-├── kata.tf                    # Kata Containers Helm release (kata only)
 ├── exec_vm.tf                 # Execution VM resources (optional)
-├── variables.tf               # Input variables (incl. sandbox_runtime)
+├── variables.tf               # Input variables
 ├── outputs.tf                 # Output values
 ├── terraform.tfvars           # Variable values (do not commit)
 ├── terraform.tfvars.example   # Example variable values
@@ -1286,7 +1223,9 @@ This has been **fixed automatically** in recent versions. The auto-pair loop now
 **Verification:**
 ```bash
 # Check if auto-pair loop is running
-kubectl logs -n openclaw deployment/openclaw-brain-alice | grep "auto-pair"
+gcloud logging read \
+  'resource.type="cloud_run_revision" AND resource.labels.service_name="run-openclaw-brain-alice" AND textPayload:"auto-pair"' \
+  --project=$PROJECT_ID --limit=5 --format='value(textPayload)'
 
 # Expected when exec_vms is empty:
 # "[entrypoint] Skipping auto-pair background loop (no exec VMs deployed)"
@@ -1309,14 +1248,11 @@ If you still experience slowness after this fix, check gateway logs for other so
 
 [Back to top](#table-of-contents)
 
-> **Note:** Cluster deletion protection is enabled. To destroy, first disable it:
-
 ```bash
-# Disable deletion protection
-terraform apply -var="deletion_protection=false" -target=google_container_cluster.primary
-
-# Then destroy
+# Destroy all Cloud Run resources
 terraform destroy
 ```
+
+> **Note:** GCS workspace buckets have `force_destroy = false` by default to prevent accidental data loss. To destroy them, either empty the buckets first or set `force_destroy = true` in `terraform.tfvars` before running `terraform destroy`.
 
 [Back to top](#table-of-contents)

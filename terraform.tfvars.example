@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# OpenClaw on GCP -- Example Variables
+# OpenClaw on Cloud Run -- Example Variables
 # Copy this to terraform.tfvars and fill in your values.
 #
 # SECURITY: Never commit terraform.tfvars to version control.
@@ -13,7 +13,12 @@ project_id = "my-gcp-project"
 region = "us-central1"
 zone   = "us-central1-c"
 
-# Developers -- each gets an isolated OpenClaw pod + PVC
+# Resource name prefix — distinguishes Cloud Run stack from GKE stack in same project.
+# All resource names become: run-openclaw-*, and the VPC is openclaw-run-vpc.
+name_prefix  = "run"
+network_name = "openclaw-run-vpc"
+
+# Developers — each gets an isolated Cloud Run service, GCS workspace bucket, and service account
 developers = {
   "alice" = { active = true }
   "bob"   = { active = true }
@@ -24,28 +29,21 @@ openclaw_version = "latest"
 model_primary    = "litellm/gemini-3.1-pro-preview"
 model_fallbacks  = "[\"litellm/gemini-3.1-flash-lite-preview\"]"
 
-# Sandbox runtime — choose one:
-#   "kata"   — GKE Standard cluster + kata-pool (N2 nodes, nested-virt, kata-clh RuntimeClass)
-#              Requires kata-deploy Helm chart (installed automatically by Terraform).
-#   "gvisor" — GKE Autopilot cluster. gVisor RuntimeClass available natively.
-#              No node pools, no Helm chart, no machine type configuration needed.
-sandbox_runtime = "kata"
+# Cloud Run execution environment — choose one:
+#   "gen2" — MicroVM sandbox (seccomp syscall filtering + Sandbox2 Linux namespace isolation)
+#             Recommended: best compatibility and isolation.
+#   "gen1" — gVisor sandbox (user-space kernel, lower overhead)
+#             Use when gen2 compatibility issues arise.
+execution_environment = "gen2"
 
 # Optional -- leave empty to auto-generate a 48-char hex token
 # gateway_auth_token = ""
 
-# Optional secrets (sensitive -- prefer TF_VAR_ env vars)
-# brave_api_key      = ""
+# Optional secrets (sensitive -- prefer TF_VAR_ env vars or Secret Manager injection)
+# brave_api_key = ""
 
-# ── Optional: Master authorized networks ────────────────────────────────────
-# Additional CIDRs allowed to access the GKE control plane.
-# GKE subnet and exec-VM subnet are added automatically.
-
-# master_authorized_cidrs = {
-#   "Cloud Shell"  = "34.80.66.100/32"
-#   "Office VPN"   = "203.0.113.0/24"
-#   "CI/CD runner" = "10.50.0.0/24"
-# }
+# Optional: Alerting
+# alert_email = "you@example.com"
 
 # ── Optional: Execution VMs ─────────────────────────────────────────────────
 # Uncomment to add VMs for OS-native command execution.

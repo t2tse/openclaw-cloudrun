@@ -4,8 +4,9 @@ locals {
   exec_vm_is_windows = {
     for name, vm in var.exec_vms : name => can(regex("(?i)windows", vm.os_image))
   }
-  # OpenClaw container image: custom or default from Artifact Registry
-  openclaw_image = var.sandbox_image != "" ? var.sandbox_image : "${var.region}-docker.pkg.dev/${var.project_id}/openclaw-sandbox/openclaw:latest"
+
+  # OpenClaw container image: custom or default from Artifact Registry (prefixed repo)
+  openclaw_image = var.sandbox_image != "" ? var.sandbox_image : "${var.region}-docker.pkg.dev/${var.project_id}/${local.pfx}openclaw-sandbox/openclaw:latest"
 }
 
 resource "google_compute_instance" "exec_vm" {
@@ -44,13 +45,15 @@ resource "google_compute_instance" "exec_vm" {
     enable_integrity_monitoring = true
   }
 
+  # Startup scripts provide gateway IPs so the node host can pair automatically.
+  # Cloud Run services expose their HTTPS URL; the exec VM connects outbound over TLS.
   metadata = local.exec_vm_is_windows[each.key] ? {
     windows-startup-script-ps1 = templatefile("${path.module}/scripts/windows_startup.ps1", {
       tls_fingerprint = data.external.tls_fingerprint.result.fingerprint
       developers_json = jsonencode({
         for name, config in var.developers : name => {
           active     = config.active
-          gateway_ip = kubernetes_service.openclaw_gateway[name].status[0].load_balancer[0].ingress[0].ip
+          gateway_url = "https://${local.pfx}openclaw-brain-${name}-${var.project_id}.${var.region}.run.app"
         }
       })
     })
@@ -60,7 +63,7 @@ resource "google_compute_instance" "exec_vm" {
       developers_json = jsonencode({
         for name, config in var.developers : name => {
           active     = config.active
-          gateway_ip = kubernetes_service.openclaw_gateway[name].status[0].load_balancer[0].ingress[0].ip
+          gateway_url = "https://${local.pfx}openclaw-brain-${name}-${var.project_id}.${var.region}.run.app"
         }
       })
     })

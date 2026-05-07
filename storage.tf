@@ -49,7 +49,7 @@ data "external" "tls_fingerprint" {
 # Artifact Registry for sandbox images
 resource "google_artifact_registry_repository" "sandbox" {
   location      = var.region
-  repository_id = "openclaw-sandbox"
+  repository_id = "${local.pfx}openclaw-sandbox"
   description   = "Private Docker images for OpenClaw sandbox containers"
   format        = "DOCKER"
   project       = var.project_id
@@ -92,10 +92,26 @@ resource "null_resource" "build_openclaw_image" {
   ]
 }
 
-# Secret Manager Secrets
+# GCS Workspace Buckets (one per developer)
+# Each Cloud Run service mounts only its own bucket via GCS FUSE.
+resource "google_storage_bucket" "openclaw_workspace" {
+  for_each = var.developers
 
+  name          = "${var.project_id}-${local.pfx}openclaw-workspace-${each.key}"
+  location      = var.region
+  project       = var.project_id
+  force_destroy = false
+
+  uniform_bucket_level_access = true
+
+  labels = merge(var.labels, { developer = each.key })
+
+  depends_on = [google_project_service.apis["storage.googleapis.com"]]
+}
+
+# Secret Manager
 resource "google_secret_manager_secret" "gateway_token" {
-  secret_id = "openclaw-gateway-token"
+  secret_id = "${local.pfx}openclaw-gateway-token"
   project   = var.project_id
 
   replication {
@@ -112,10 +128,28 @@ resource "google_secret_manager_secret_version" "gateway_token" {
   secret_data = local.gateway_auth_token
 }
 
+resource "google_secret_manager_secret" "litellm_key" {
+  secret_id = "${local.pfx}openclaw-litellm-key"
+  project   = var.project_id
+
+  replication {
+    auto {}
+  }
+
+  labels = var.labels
+
+  depends_on = [google_project_service.apis["secretmanager.googleapis.com"]]
+}
+
+resource "google_secret_manager_secret_version" "litellm_key" {
+  secret      = google_secret_manager_secret.litellm_key.id
+  secret_data = random_password.litellm_key.result
+}
+
 resource "google_secret_manager_secret" "brave_api_key" {
   count = var.brave_api_key != "" ? 1 : 0
 
-  secret_id = "openclaw-brave-api-key"
+  secret_id = "${local.pfx}openclaw-brave-api-key"
   project   = var.project_id
 
   replication {
@@ -133,4 +167,3 @@ resource "google_secret_manager_secret_version" "brave_api_key" {
   secret      = google_secret_manager_secret.brave_api_key[0].id
   secret_data = var.brave_api_key
 }
-

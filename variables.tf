@@ -13,7 +13,7 @@ variable "project_id" {
 }
 
 variable "region" {
-  description = "GCP region for regional resources (Artifact Registry, Secret Manager)."
+  description = "GCP region for regional resources (Cloud Run, Artifact Registry, Secret Manager)."
   type        = string
   default     = "us-central1"
 }
@@ -25,25 +25,39 @@ variable "zone" {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Naming
+# ──────────────────────────────────────────────────────────────────────────────
+
+variable "name_prefix" {
+  description = <<-EOT
+    Short prefix prepended to all resource names to avoid clashes when
+    deploying alongside another OpenClaw stack (e.g. GKE) in the same project.
+    Examples: "run" (default), "dev", "staging".
+    Leave empty for no prefix.
+  EOT
+  type    = string
+  default = "run"
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]{0,8}$", var.name_prefix))
+    error_message = "name_prefix must be lowercase alphanumeric/hyphens, max 8 chars."
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Networking
 # ──────────────────────────────────────────────────────────────────────────────
 
 variable "network_name" {
   description = "Name of the VPC network."
   type        = string
-  default     = "openclaw-vpc"
+  default     = "openclaw-run-vpc"
 }
 
-variable "gke_subnet_cidr" {
-  description = "CIDR range for the GKE subnet."
+variable "subnet_cidr" {
+  description = "CIDR range for the Cloud Run Direct VPC Egress subnet."
   type        = string
   default     = "10.10.0.0/24"
-}
-
-variable "master_authorized_cidrs" {
-  description = "Additional CIDR blocks allowed to access the GKE control plane (e.g. admin IPs, CI/CD runners). GKE and exec-VM subnets are added automatically."
-  type = map(string)
-  default = {}
 }
 
 variable "exec_vm_subnet_cidr" {
@@ -52,56 +66,23 @@ variable "exec_vm_subnet_cidr" {
   default     = "10.20.0.0/24"
 }
 
-variable "gke_pods_cidr" {
-  description = "Secondary CIDR range for GKE Pods."
-  type        = string
-  default     = "10.100.0.0/16"
-}
-
-variable "gke_services_cidr" {
-  description = "Secondary CIDR range for GKE Services."
-  type        = string
-  default     = "10.101.0.0/16"
-}
-
 # ──────────────────────────────────────────────────────────────────────────────
-# Compute (GKE)
+# Cloud Run
 # ──────────────────────────────────────────────────────────────────────────────
 
-variable "gke_cluster_name" {
-  description = "Name of the GKE Standard cluster."
-  type        = string
-  default     = "openclaw-cluster"
-}
-
-variable "gke_machine_type" {
-  description = "Machine type for the kata-pool node pool (Standard cluster only). Must support nested virtualization (N2 series). Not used in Autopilot mode."
-  type        = string
-  default     = "n2-standard-4"
-}
-
-variable "gke_node_count" {
-  description = "Number of nodes per zone in the kata-pool (Standard cluster only). Not used in Autopilot mode."
-  type        = number
-  default     = 1
-}
-
-variable "sandbox_runtime" {
+variable "execution_environment" {
   description = <<-EOT
-    Sandbox runtime for OpenClaw brain pods. Determines the cluster mode:
-      "kata"   — GKE Standard cluster with kata-pool (N2 nodes, nested-virt,
-                 UBUNTU_CONTAINERD). Uses kata-clh RuntimeClass. Requires the
-                 kata-deploy Helm chart (installed automatically).
-      "gvisor" — GKE Autopilot cluster. Uses the built-in gVisor (runsc)
-                 RuntimeClass. No node pools or extra Helm charts needed.
-                 Autopilot manages all node provisioning automatically.
+    Cloud Run execution environment for OpenClaw brain services:
+      "gen2" — 2nd generation (MicroVM, seccomp syscall filtering + Sandbox2 Linux namespace
+               isolation, recommended for compatibility)
+      "gen1" — 1st generation (gVisor, user-space kernel with syscall interception)
   EOT
-  type        = string
-  default     = "kata"
+  type    = string
+  default = "gen2"
 
   validation {
-    condition     = contains(["kata", "gvisor"], var.sandbox_runtime)
-    error_message = "sandbox_runtime must be 'kata' or 'gvisor'."
+    condition     = contains(["gen1", "gen2"], var.execution_environment)
+    error_message = "execution_environment must be 'gen1' or 'gen2'."
   }
 }
 
@@ -112,7 +93,7 @@ variable "sandbox_runtime" {
 # ──────────────────────────────────────────────────────────────────────────────
 
 variable "exec_vms" {
-  description = "Map of execution VMs to create. Each VM runs per-developer node hosts that connect back to gateway pods. The OS is auto-detected from the image (images containing 'windows' use PowerShell startup, others use bash)."
+  description = "Map of execution VMs to create. Each VM runs per-developer node hosts that connect back to gateway services. The OS is auto-detected from the image (images containing 'windows' use PowerShell startup, others use bash)."
   type = map(object({
     machine_type      = optional(string, "e2-standard-2")
     boot_disk_size_gb = optional(number, 50)
@@ -151,7 +132,7 @@ variable "openclaw_version" {
 }
 
 variable "sandbox_image" {
-  description = "Docker image for OpenClaw brain pods. When empty (default), uses the image from the project's Artifact Registry built by scripts/build_and_push.sh. Set to a custom image to use a pre-built image."
+  description = "Docker image for OpenClaw brain containers. When empty (default), uses the image from the project's Artifact Registry built by scripts/build_and_push.sh."
   type        = string
   default     = ""
 }
@@ -169,7 +150,7 @@ variable "model_fallbacks" {
 }
 
 variable "developers" {
-  description = "Map of developer names to their configuration. Each developer gets a dedicated OpenClaw pod, PVC, and SSH key. Names must be lowercase alphanumeric with hyphens only."
+  description = "Map of developer names to their configuration. Each developer gets a dedicated Cloud Run service, GCS workspace bucket, and service account. Names must be lowercase alphanumeric with hyphens only."
   type = map(object({
     active = bool
   }))
@@ -194,7 +175,7 @@ variable "deployer_service_account" {
 # ──────────────────────────────────────────────────────────────────────────────
 
 variable "alert_email" {
-  description = "Email address for OpenClaw operational alerts (exec denied, node disconnects, crash loops)."
+  description = "Email address for OpenClaw operational alerts (exec denied, node disconnects, container restarts)."
   type        = string
   default     = ""
 }
@@ -211,4 +192,13 @@ variable "labels" {
     managed-by  = "terraform"
     environment = "production"
   }
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Locals
+# ──────────────────────────────────────────────────────────────────────────────
+
+locals {
+  # Resource name prefix: "run-" when name_prefix = "run", "" when empty
+  pfx = var.name_prefix != "" ? "${var.name_prefix}-" : ""
 }

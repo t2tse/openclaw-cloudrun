@@ -1,81 +1,152 @@
-# Service Account for OpenClaw (GKE Brain)
+# ──────────────────────────────────────────────────────────────────────────────
+# Per-Developer Brain Service Accounts
+# One SA per developer — strict IAM isolation and separate audit trail.
+# Each SA is bound to exactly one Cloud Run service and one GCS workspace bucket.
+# ──────────────────────────────────────────────────────────────────────────────
 resource "google_service_account" "openclaw_brain" {
-  account_id   = "openclaw-brain"
-  display_name = "OpenClaw Brain Service Account"
+  for_each = var.developers
+
+  account_id   = "${local.pfx}openclaw-brain-${each.key}"
+  display_name = "OpenClaw Brain — ${each.key}"
   project      = var.project_id
 }
 
-# Service Account for Execution VM (Hands)
-resource "google_service_account" "exec_vm" {
-  count = local.exec_vms_enabled ? 1 : 0
-
-  account_id   = "openclaw-exec-vm"
-  display_name = "OpenClaw Execution VM Service Account"
-  project      = var.project_id
-}
-# Service Account for GKE Nodes
-resource "google_service_account" "gke_nodes" {
-  account_id   = "gke-nodes-sa"
-  display_name = "GKE Autopilot Node Service Account"
-  project      = var.project_id
+# Vertex AI — call Gemini models via metadata server (no API key needed)
+resource "google_project_iam_member" "brain_vertex_ai_user" {
+  for_each = var.developers
+  project  = var.project_id
+  role     = "roles/aiplatform.user"
+  member   = google_service_account.openclaw_brain[each.key].member
 }
 
-# Grant permissions to GKE Node Service Account
-resource "google_project_iam_member" "gke_node_default_sa" {
-  project = var.project_id
-  role    = "roles/container.defaultNodeServiceAccount"
-  member  = "serviceAccount:${google_service_account.gke_nodes.email}"
+# Cloud Logging — write stdout/stderr from Cloud Run to Cloud Logging
+resource "google_project_iam_member" "brain_logging_writer" {
+  for_each = var.developers
+  project  = var.project_id
+  role     = "roles/logging.logWriter"
+  member   = google_service_account.openclaw_brain[each.key].member
 }
 
-resource "google_project_iam_member" "gke_node_ar_reader" {
-  project = var.project_id
-  role    = "roles/artifactregistry.reader"
-  member  = "serviceAccount:${google_service_account.gke_nodes.email}"
+# Cloud Monitoring — emit custom metrics
+resource "google_project_iam_member" "brain_monitoring_writer" {
+  for_each = var.developers
+  project  = var.project_id
+  role     = "roles/monitoring.metricWriter"
+  member   = google_service_account.openclaw_brain[each.key].member
 }
 
-# Per-secret IAM: Brain SA can access only specific secrets (not project-wide secretAccessor)
+# Cloud Run invoker — allow brain services to call the LiteLLM Cloud Run service
+resource "google_project_iam_member" "brain_run_invoker" {
+  for_each = var.developers
+  project  = var.project_id
+  role     = "roles/run.invoker"
+  member   = google_service_account.openclaw_brain[each.key].member
+}
+
+# GCS workspace: each brain SA accesses only its own developer's bucket
+resource "google_storage_bucket_iam_member" "openclaw_workspace_access" {
+  for_each = var.developers
+
+  bucket = google_storage_bucket.openclaw_workspace[each.key].name
+  role   = "roles/storage.objectUser"
+  member = google_service_account.openclaw_brain[each.key].member
+}
+
+# Secret: gateway token — all brain SAs need to read it at startup
 resource "google_secret_manager_secret_iam_member" "brain_gateway_token_accessor" {
+  for_each = var.developers
+
   secret_id = google_secret_manager_secret.gateway_token.secret_id
   project   = var.project_id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.openclaw_brain.email}"
+  member    = google_service_account.openclaw_brain[each.key].member
 }
 
+# Secret: Brave API key — only granted when key is configured
 resource "google_secret_manager_secret_iam_member" "brain_brave_accessor" {
-  count     = var.brave_api_key != "" ? 1 : 0
+  for_each = var.brave_api_key != "" ? var.developers : {}
+
   secret_id = google_secret_manager_secret.brave_api_key[0].secret_id
   project   = var.project_id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.openclaw_brain.email}"
+  member    = google_service_account.openclaw_brain[each.key].member
 }
 
-# Grant OpenClaw Brain access to logging and monitoring
-resource "google_project_iam_member" "brain_logging_writer" {
+# ──────────────────────────────────────────────────────────────────────────────
+# LiteLLM Service Account (shared, single service)
+# Needs Vertex AI user + LiteLLM key secret access + logging/monitoring.
+# ──────────────────────────────────────────────────────────────────────────────
+resource "google_service_account" "openclaw_litellm" {
+  account_id   = "${local.pfx}openclaw-litellm"
+  display_name = "OpenClaw LiteLLM Service Account"
+  project      = var.project_id
+}
+
+resource "google_project_iam_member" "litellm_vertex_ai_user" {
+  project = var.project_id
+  role    = "roles/aiplatform.user"
+  member  = google_service_account.openclaw_litellm.member
+}
+
+resource "google_project_iam_member" "litellm_logging_writer" {
   project = var.project_id
   role    = "roles/logging.logWriter"
-  member  = "serviceAccount:${google_service_account.openclaw_brain.email}"
+  member  = google_service_account.openclaw_litellm.member
 }
 
-resource "google_project_iam_member" "brain_monitoring_writer" {
+resource "google_project_iam_member" "litellm_monitoring_writer" {
   project = var.project_id
   role    = "roles/monitoring.metricWriter"
-  member  = "serviceAccount:${google_service_account.openclaw_brain.email}"
+  member  = google_service_account.openclaw_litellm.member
 }
 
-# Workload Identity Binding
-resource "google_service_account_iam_binding" "workload_identity_user" {
-  service_account_id = google_service_account.openclaw_brain.name
-  role               = "roles/iam.workloadIdentityUser"
-
-  members = [
-    # local.cluster_workload_pool resolves to the active cluster (standard or autopilot)
-    "serviceAccount:${local.cluster_workload_pool}[openclaw/openclaw-brain]"
-  ]
+resource "google_secret_manager_secret_iam_member" "litellm_key_accessor" {
+  secret_id = google_secret_manager_secret.litellm_key.secret_id
+  project   = var.project_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = google_service_account.openclaw_litellm.member
 }
 
-# Service Account for Cloud Build
+# ──────────────────────────────────────────────────────────────────────────────
+# Execution VM Service Account (optional, shared across all exec VMs)
+# ──────────────────────────────────────────────────────────────────────────────
+resource "google_service_account" "exec_vm" {
+  count = local.exec_vms_enabled ? 1 : 0
+
+  account_id   = "${local.pfx}openclaw-exec-vm"
+  display_name = "OpenClaw Execution VM Service Account"
+  project      = var.project_id
+}
+
+resource "google_project_iam_member" "exec_vm_logging_writer" {
+  count   = local.exec_vms_enabled ? 1 : 0
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = google_service_account.exec_vm[0].member
+}
+
+resource "google_project_iam_member" "exec_vm_monitoring_writer" {
+  count   = local.exec_vms_enabled ? 1 : 0
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = google_service_account.exec_vm[0].member
+}
+
+# Exec VMs read the gateway token to connect node hosts to Cloud Run services
+resource "google_secret_manager_secret_iam_member" "exec_vm_gateway_token_accessor" {
+  count     = local.exec_vms_enabled ? 1 : 0
+  secret_id = google_secret_manager_secret.gateway_token.secret_id
+  project   = var.project_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = google_service_account.exec_vm[0].member
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Cloud Build Service Account
+# Used by Terraform's null_resource to build and push the OpenClaw image.
+# ──────────────────────────────────────────────────────────────────────────────
 resource "google_service_account" "cloudbuild" {
-  account_id   = "openclaw-cloudbuild"
+  account_id   = "${local.pfx}openclaw-cloudbuild"
   display_name = "OpenClaw Cloud Build Service Account"
   project      = var.project_id
 }
@@ -83,60 +154,30 @@ resource "google_service_account" "cloudbuild" {
 resource "google_project_iam_member" "cloudbuild_builder" {
   project = var.project_id
   role    = "roles/cloudbuild.builds.builder"
-  member  = "serviceAccount:${google_service_account.cloudbuild.email}"
+  member  = google_service_account.cloudbuild.member
 }
 
 resource "google_project_iam_member" "cloudbuild_ar_writer" {
   project = var.project_id
   role    = "roles/artifactregistry.writer"
-  member  = "serviceAccount:${google_service_account.cloudbuild.email}"
+  member  = google_service_account.cloudbuild.member
 }
 
 resource "google_project_iam_member" "cloudbuild_storage" {
   project = var.project_id
   role    = "roles/storage.objectAdmin"
-  member  = "serviceAccount:${google_service_account.cloudbuild.email}"
+  member  = google_service_account.cloudbuild.member
 }
 
 resource "google_project_iam_member" "cloudbuild_logging" {
   project = var.project_id
   role    = "roles/logging.logWriter"
-  member  = "serviceAccount:${google_service_account.cloudbuild.email}"
+  member  = google_service_account.cloudbuild.member
 }
 
-# Grant OpenClaw Brain access to Vertex AI (for LiteLLM Gemini models)
-resource "google_project_iam_member" "brain_vertex_ai_user" {
-  project = var.project_id
-  role    = "roles/aiplatform.user"
-  member  = "serviceAccount:${google_service_account.openclaw_brain.email}"
-}
-
-# Execution VM logging access
-resource "google_project_iam_member" "exec_vm_logging_writer" {
-  count   = local.exec_vms_enabled ? 1 : 0
-  project = var.project_id
-  role    = "roles/logging.logWriter"
-  member  = "serviceAccount:${google_service_account.exec_vm[0].email}"
-}
-
-# Execution VM monitoring access
-resource "google_project_iam_member" "exec_vm_monitoring_writer" {
-  count   = local.exec_vms_enabled ? 1 : 0
-  project = var.project_id
-  role    = "roles/monitoring.metricWriter"
-  member  = "serviceAccount:${google_service_account.exec_vm[0].email}"
-}
-
-# Per-secret IAM: Execution VM can access gateway token from Secret Manager
-resource "google_secret_manager_secret_iam_member" "exec_vm_gateway_token_accessor" {
-  count     = local.exec_vms_enabled ? 1 : 0
-  secret_id = google_secret_manager_secret.gateway_token.secret_id
-  project   = var.project_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.exec_vm[0].email}"
-}
-
-# IAP access for deployer (if provided)
+# ──────────────────────────────────────────────────────────────────────────────
+# IAP Access (optional — for exec VM SSH tunnels via IAP)
+# ──────────────────────────────────────────────────────────────────────────────
 resource "google_project_iam_member" "iap_access" {
   count   = var.deployer_service_account != "" ? 1 : 0
   project = var.project_id

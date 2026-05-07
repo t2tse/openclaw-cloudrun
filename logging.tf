@@ -36,12 +36,11 @@ resource "google_monitoring_notification_channel" "openclaw_email" {
 
 # Alert 1: Exec approval denied (SYSTEM_RUN_DENIED)
 resource "google_logging_metric" "exec_denied" {
-  name    = "openclaw/exec_denied"
+  name    = "${local.pfx}openclaw/exec_denied"
   project = var.project_id
   filter  = <<-EOT
-    resource.type="k8s_container"
-    resource.labels.namespace_name="openclaw"
-    resource.labels.container_name="openclaw"
+    resource.type="cloud_run_revision"
+    resource.labels.service_name=~"${local.pfx}openclaw-brain.*"
     textPayload=~"SYSTEM_RUN_DENIED"
   EOT
 
@@ -62,7 +61,7 @@ resource "google_monitoring_alert_policy" "exec_denied" {
     display_name = "Exec approval denied (SYSTEM_RUN_DENIED)"
 
     condition_threshold {
-      filter          = "resource.type = \"k8s_container\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.exec_denied.name}\""
+      filter          = "resource.type = \"cloud_run_revision\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.exec_denied.name}\""
       comparison      = "COMPARISON_GT"
       threshold_value = 0
       duration        = "0s"
@@ -90,12 +89,11 @@ resource "google_monitoring_alert_policy" "exec_denied" {
 
 # Alert 2: Node host disconnected (NOT_CONNECTED errors indicate stale pairings or network issues)
 resource "google_logging_metric" "node_disconnected" {
-  name    = "openclaw/node_disconnected"
+  name    = "${local.pfx}openclaw/node_disconnected"
   project = var.project_id
   filter  = <<-EOT
-    resource.type="k8s_container"
-    resource.labels.namespace_name="openclaw"
-    resource.labels.container_name="openclaw"
+    resource.type="cloud_run_revision"
+    resource.labels.service_name=~"${local.pfx}openclaw-brain.*"
     textPayload=~"NOT_CONNECTED: node not connected"
   EOT
 
@@ -116,7 +114,7 @@ resource "google_monitoring_alert_policy" "node_disconnected" {
     display_name = "High rate of node disconnection errors"
 
     condition_threshold {
-      filter          = "resource.type = \"k8s_container\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.node_disconnected.name}\""
+      filter          = "resource.type = \"cloud_run_revision\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.node_disconnected.name}\""
       comparison      = "COMPARISON_GT"
       threshold_value = 50
       duration        = "300s"
@@ -144,13 +142,13 @@ resource "google_monitoring_alert_policy" "node_disconnected" {
 
 # Alert 3: Gateway crash / pod restart
 resource "google_logging_metric" "gateway_crash" {
-  name    = "openclaw/gateway_restart"
+  name    = "${local.pfx}openclaw/gateway_restart"
   project = var.project_id
   filter  = <<-EOT
-    resource.type="k8s_container"
-    resource.labels.namespace_name="openclaw"
-    resource.labels.container_name="openclaw"
-    jsonPayload.reason="BackOff" OR textPayload=~"CrashLoopBackOff"
+    resource.type="cloud_run_revision"
+    resource.labels.service_name=~"${local.pfx}openclaw-brain.*"
+    severity>="ERROR"
+    textPayload=~"process exited|container.*exit|SIGKILL|unhandledRejection"
   EOT
 
   metric_descriptor {
@@ -162,15 +160,15 @@ resource "google_logging_metric" "gateway_crash" {
 resource "google_monitoring_alert_policy" "gateway_crash" {
   count = var.alert_email != "" ? 1 : 0
 
-  display_name = "OpenClaw: Gateway Pod CrashLoop"
+  display_name = "OpenClaw: Gateway Container Crash"
   project      = var.project_id
   combiner     = "OR"
 
   conditions {
-    display_name = "Gateway pod in CrashLoopBackOff"
+    display_name = "Gateway container exiting repeatedly"
 
     condition_threshold {
-      filter          = "resource.type = \"k8s_container\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.gateway_crash.name}\""
+      filter          = "resource.type = \"cloud_run_revision\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.gateway_crash.name}\""
       comparison      = "COMPARISON_GT"
       threshold_value = 0
       duration        = "0s"
@@ -189,7 +187,7 @@ resource "google_monitoring_alert_policy" "gateway_crash" {
   }
 
   documentation {
-    content   = "An OpenClaw gateway pod is crash-looping. Common causes: invalid config (gateway.bind != 'lan'), missing secrets, or throwOnLoadError issues. Check `kubectl logs -n openclaw` and the entrypoint config merge logic."
+    content   = "An OpenClaw gateway container is crashing. Common causes: invalid config (gateway.bind != 'lan'), missing secrets, or throwOnLoadError issues. Check logs with: gcloud logging read 'resource.type=\"cloud_run_revision\"' --project=PROJECT_ID --limit=50"
     mime_type = "text/markdown"
   }
 
@@ -198,7 +196,7 @@ resource "google_monitoring_alert_policy" "gateway_crash" {
 
 # Alert 4: VM node host service failure (Linux)
 resource "google_logging_metric" "vm_node_failure" {
-  name    = "openclaw/vm_node_failure"
+  name    = "${local.pfx}openclaw/vm_node_failure"
   project = var.project_id
   filter  = <<-EOT
     resource.type="gce_instance"
@@ -251,13 +249,13 @@ resource "google_monitoring_alert_policy" "vm_node_failure" {
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Log Storage -- GCS Bucket Sink
-# All OpenClaw logs (pods + VMs) are exported to a GCS bucket for long-term
+# All OpenClaw logs (Cloud Run services + VMs) are exported to a GCS bucket for long-term
 # retention, querying, and compliance. Cloud Logging retains logs for 30 days;
 # the bucket provides unlimited retention.
 # ──────────────────────────────────────────────────────────────────────────────
 
 resource "google_storage_bucket" "openclaw_logs" {
-  name          = "${var.project_id}-openclaw-logs"
+  name          = "${var.project_id}-${local.pfx}openclaw-logs"
   location      = var.region
   project       = var.project_id
   force_destroy = false
@@ -289,12 +287,12 @@ resource "google_storage_bucket" "openclaw_logs" {
 
 # Log sink: export all OpenClaw-related logs to the GCS bucket
 resource "google_logging_project_sink" "openclaw_gcs" {
-  name        = "openclaw-logs-to-gcs"
+  name        = "${local.pfx}openclaw-logs-to-gcs"
   project     = var.project_id
   destination = "storage.googleapis.com/${google_storage_bucket.openclaw_logs.name}"
 
   filter = <<-EOT
-    (resource.type="k8s_container" AND resource.labels.namespace_name="openclaw")
+    (resource.type="cloud_run_revision" AND resource.labels.service_name=~"${local.pfx}openclaw.*")
     OR
     (resource.type="gce_instance" AND resource.labels.instance_id=~"openclaw-exec-.*")
   EOT
@@ -326,13 +324,9 @@ resource "google_monitoring_dashboard" "openclaw" {
           width  = 6
           height = 4
           widget = {
-            title = "Gateway Pod Logs (all developers)"
+            title = "Brain Service Logs (all developers)"
             logsPanel = {
-              filter = <<-EOT
-                resource.type="k8s_container"
-                resource.labels.namespace_name="openclaw"
-                resource.labels.container_name="openclaw"
-              EOT
+              filter = "resource.type=\"cloud_run_revision\"\nresource.labels.service_name=~\"${local.pfx}openclaw-brain.*\""
             }
           }
         },
@@ -344,10 +338,7 @@ resource "google_monitoring_dashboard" "openclaw" {
           widget = {
             title = "Execution VM Logs"
             logsPanel = {
-              filter = <<-EOT
-                resource.type="gce_instance"
-                resource.labels.instance_id=~"openclaw-exec-.*"
-              EOT
+              filter = "resource.type=\"gce_instance\"\nresource.labels.instance_id=~\"openclaw-exec-.*\""
             }
           }
         },
@@ -362,7 +353,7 @@ resource "google_monitoring_dashboard" "openclaw" {
               dataSets = [{
                 timeSeriesQuery = {
                   timeSeriesFilter = {
-                    filter = "resource.type = \"k8s_container\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.exec_denied.name}\""
+                    filter = "resource.type = \"cloud_run_revision\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.exec_denied.name}\""
                     aggregation = {
                       alignmentPeriod  = "300s"
                       perSeriesAligner = "ALIGN_SUM"
@@ -386,7 +377,7 @@ resource "google_monitoring_dashboard" "openclaw" {
               dataSets = [{
                 timeSeriesQuery = {
                   timeSeriesFilter = {
-                    filter = "resource.type = \"k8s_container\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.node_disconnected.name}\""
+                    filter = "resource.type = \"cloud_run_revision\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.node_disconnected.name}\""
                     aggregation = {
                       alignmentPeriod  = "300s"
                       perSeriesAligner = "ALIGN_SUM"
@@ -429,14 +420,9 @@ resource "google_monitoring_dashboard" "openclaw" {
           width  = 6
           height = 4
           widget = {
-            title = "Gateway Errors Only"
+            title = "Brain Service Errors Only"
             logsPanel = {
-              filter = <<-EOT
-                resource.type="k8s_container"
-                resource.labels.namespace_name="openclaw"
-                resource.labels.container_name="openclaw"
-                severity>="ERROR"
-              EOT
+              filter = "resource.type=\"cloud_run_revision\"\nresource.labels.service_name=~\"${local.pfx}openclaw-brain.*\"\nseverity>=\"ERROR\""
             }
           }
         },
@@ -448,12 +434,7 @@ resource "google_monitoring_dashboard" "openclaw" {
           widget = {
             title = "WebSocket Activity"
             logsPanel = {
-              filter = <<-EOT
-                resource.type="k8s_container"
-                resource.labels.namespace_name="openclaw"
-                resource.labels.container_name="openclaw"
-                textPayload=~"\\[ws\\]"
-              EOT
+              filter = "resource.type=\"cloud_run_revision\"\nresource.labels.service_name=~\"${local.pfx}openclaw-brain.*\"\ntextPayload=~\"\\\\[ws\\\\]\""
             }
           }
         }

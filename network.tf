@@ -4,22 +4,13 @@ resource "google_compute_network" "vpc" {
   project                 = var.project_id
 }
 
-resource "google_compute_subnetwork" "gke_subnet" {
-  name                     = "${var.network_name}-gke-subnet"
-  ip_cidr_range            = var.gke_subnet_cidr
+# Primary subnet for Cloud Run Direct VPC Egress
+resource "google_compute_subnetwork" "cloudrun_subnet" {
+  name                     = "${var.network_name}-cloudrun-subnet"
+  ip_cidr_range            = var.subnet_cidr
   region                   = var.region
   network                  = google_compute_network.vpc.id
   private_ip_google_access = true
-
-  secondary_ip_range {
-    range_name    = "gke-pods"
-    ip_cidr_range = var.gke_pods_cidr
-  }
-
-  secondary_ip_range {
-    range_name    = "gke-services"
-    ip_cidr_range = var.gke_services_cidr
-  }
 
   log_config {
     aggregation_interval = "INTERVAL_5_SEC"
@@ -74,7 +65,7 @@ resource "google_compute_firewall" "deny_all_ingress" {
   source_ranges = ["0.0.0.0/0"]
 }
 
-# Allow SSH via IAP
+# Allow SSH/RDP via IAP (for exec VMs)
 resource "google_compute_firewall" "allow_iap_ssh" {
   name    = "${var.network_name}-allow-iap-ssh"
   network = google_compute_network.vpc.id
@@ -90,11 +81,11 @@ resource "google_compute_firewall" "allow_iap_ssh" {
   source_ranges = ["35.235.240.0/20"]
 }
 
-# Allow execution VM to connect to GKE node network (for Internal Load Balancer gateway services)
-resource "google_compute_firewall" "allow_exec_vm_to_gke" {
+# Allow execution VM to connect to Cloud Run (for Internal Load Balancer gateway services)
+resource "google_compute_firewall" "allow_exec_vm_to_cloudrun" {
   count = local.exec_vms_enabled ? 1 : 0
 
-  name    = "${var.network_name}-allow-exec-vm-to-gke"
+  name    = "${var.network_name}-allow-exec-vm-to-cloudrun"
   network = google_compute_network.vpc.id
 
   direction = "INGRESS"

@@ -10,7 +10,7 @@ terraform {
   # Override with: terraform init -backend-config="bucket=YOUR_BUCKET"
   backend "gcs" {
     bucket = ""
-    prefix = "openclaw-gke"
+    prefix = "openclaw-cloudrun"
   }
 
   required_providers {
@@ -22,17 +22,9 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.0"
     }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "2.38.0"
-    }
     tls = {
       source  = "hashicorp/tls"
       version = "~> 4.0"
-    }
-    helm = {
-      source  = "hashicorp/helm"
-      version = "~> 2.0"
     }
     time = {
       source  = "hashicorp/time"
@@ -54,33 +46,6 @@ provider "google" {
   region  = var.region
 }
 
-
-data "google_client_config" "default" {}
-
-provider "kubernetes" {
-  config_path = "~/.kube/config"
-}
-
-provider "helm" {
-  kubernetes {
-    config_path = "~/.kube/config"
-  }
-}
-
-# Refresh kubeconfig after cluster is created (for debugging/manual access)
-resource "null_resource" "kubeconfig" {
-  depends_on = [
-    google_container_node_pool.kata_pool,    # empty when sandbox_runtime = "gvisor" (count = 0)
-    google_container_cluster.autopilot,      # empty when sandbox_runtime = "kata"   (count = 0)
-  ]
-
-  provisioner "local-exec" {
-    command = "gcloud container clusters get-credentials ${local.cluster_name} --region ${var.region} --project ${var.project_id}"
-  }
-}
-
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Enable Required APIs
 # ──────────────────────────────────────────────────────────────────────────────
@@ -90,7 +55,8 @@ resource "google_project_service" "apis" {
     "cloudresourcemanager.googleapis.com",
     "serviceusage.googleapis.com",
     "compute.googleapis.com",
-    "container.googleapis.com", # Added for GKE
+    "run.googleapis.com",
+    "storage.googleapis.com",
     "secretmanager.googleapis.com",
     "artifactregistry.googleapis.com",
     "iap.googleapis.com",
@@ -98,7 +64,7 @@ resource "google_project_service" "apis" {
     "iam.googleapis.com",
     "cloudbuild.googleapis.com",
     "containerscanning.googleapis.com",
-    "aiplatform.googleapis.com"
+    "aiplatform.googleapis.com",
   ])
 
   project            = var.project_id
