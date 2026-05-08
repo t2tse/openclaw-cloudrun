@@ -146,7 +146,7 @@ variable "model_primary" {
 variable "model_fallbacks" {
   description = "Fallback model identifiers (JSON array)."
   type        = string
-  default     = "[\"litellm/gemini-3.1-flash-lite-preview\"]"
+  default     = "[\"litellm/gemini-3.1-flash-lite\"]"
 }
 
 variable "developers" {

@@ -27,7 +27,7 @@ developers = {
 # OpenClaw
 openclaw_version = "latest"
 model_primary    = "litellm/gemini-3.1-pro-preview"
-model_fallbacks  = "[\"litellm/gemini-3.1-flash-lite-preview\"]"
+model_fallbacks  = "[\"litellm/gemini-3.1-flash-lite\"]"
 
 # Cloud Run execution environment — choose one:
 #   "gen2" — MicroVM sandbox (seccomp syscall filtering + Sandbox2 Linux namespace isolation)

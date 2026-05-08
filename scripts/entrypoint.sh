@@ -4,7 +4,7 @@ set -e
 # Substitute environment variables in the template
 
 export MODEL_PRIMARY="${MODEL_PRIMARY:-litellm/gemini-3.1-pro-preview}"
-export MODEL_FALLBACKS="${MODEL_FALLBACKS:-[\"litellm/gemini-3.1-flash-lite-preview\"]}"
+export MODEL_FALLBACKS="${MODEL_FALLBACKS:-[\"litellm/gemini-3.1-flash-lite\"]}"
 export GATEWAY_AUTH_TOKEN="${GATEWAY_AUTH_TOKEN:-}"
 export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-}"
 export GATEWAY_BIND="${GATEWAY_BIND:-loopback}"

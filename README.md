@@ -337,7 +337,7 @@ developers = {
 # OpenClaw
 openclaw_version = "latest"
 model_primary    = "litellm/gemini-3.1-pro-preview"
-model_fallbacks  = "[\"litellm/gemini-3.1-flash-lite-preview\"]"
+model_fallbacks  = "[\"litellm/gemini-3.1-flash-lite\"]"
 
 # Execution environment -- choose one:
 #   "gen2" -- MicroVM sandbox (default, recommended; required for GCS FUSE)
@@ -477,7 +477,7 @@ VERTEXAI_LOCATION=global,\
 GOOGLE_VERTEX_BASE_URL=https://aiplatform.googleapis.com/,\
 LITELLM_BASE_URL=${LITELLM_URL}/v1,\
 MODEL_PRIMARY=litellm/gemini-3.1-pro-preview,\
-MODEL_FALLBACKS=[\"litellm/gemini-3.1-flash-lite-preview\"],\
+MODEL_FALLBACKS=[\"litellm/gemini-3.1-flash-lite\"],\
 OPENCLAW_STATE_DIR=/app/workspace/.openclaw-state,\
 OPENCLAW_NO_RESPAWN=1,\
 NODE_COMPILE_CACHE=/app/workspace/.openclaw-state/compile-cache,\
@@ -505,7 +505,7 @@ GATEWAY_BIND=lan"
 >     --memory 2Gi --cpu 2 \
 >     --set-secrets "GATEWAY_AUTH_TOKEN=${GATEWAY_SECRET}:latest,LITELLM_MASTER_KEY=${LITELLM_KEY_SECRET}:latest" \
 >     --add-volume "mount-path=/app/workspace,type=cloud-storage,bucket=${PROJECT_ID}-${NAME_PREFIX}-openclaw-workspace-${DEVELOPER}" \
->     --set-env-vars "DEVELOPER=${DEVELOPER},VERTEXAI_PROJECT=${PROJECT_ID},VERTEXAI_LOCATION=global,GOOGLE_VERTEX_BASE_URL=https://aiplatform.googleapis.com/,LITELLM_BASE_URL=${LITELLM_URL}/v1,MODEL_PRIMARY=litellm/gemini-3.1-pro-preview,MODEL_FALLBACKS=[\"litellm/gemini-3.1-flash-lite-preview\"],OPENCLAW_STATE_DIR=/app/workspace/.openclaw-state,OPENCLAW_NO_RESPAWN=1,NODE_COMPILE_CACHE=/app/workspace/.openclaw-state/compile-cache,OPENCLAW_HANDSHAKE_TIMEOUT_MS=60000,NODE_TLS_REJECT_UNAUTHORIZED=0,EXEC_VMS_ENABLED=false,GATEWAY_BIND=lan"
+>     --set-env-vars "DEVELOPER=${DEVELOPER},VERTEXAI_PROJECT=${PROJECT_ID},VERTEXAI_LOCATION=global,GOOGLE_VERTEX_BASE_URL=https://aiplatform.googleapis.com/,LITELLM_BASE_URL=${LITELLM_URL}/v1,MODEL_PRIMARY=litellm/gemini-3.1-pro-preview,MODEL_FALLBACKS=[\"litellm/gemini-3.1-flash-lite\"],OPENCLAW_STATE_DIR=/app/workspace/.openclaw-state,OPENCLAW_NO_RESPAWN=1,NODE_COMPILE_CACHE=/app/workspace/.openclaw-state/compile-cache,OPENCLAW_HANDSHAKE_TIMEOUT_MS=60000,NODE_TLS_REJECT_UNAUTHORIZED=0,EXEC_VMS_ENABLED=false,GATEWAY_BIND=lan"
 > done
 > ```
 
@@ -1235,7 +1235,7 @@ Access at: **Cloud Console → Monitoring → Dashboards → OpenClaw Operations
 | `sandbox_image` | No | `""` | Custom Docker image for Cloud Run services |
 | `openclaw_version` | No | `latest` | OpenClaw npm package version |
 | `model_primary` | No | `litellm/gemini-3.1-pro-preview` | Primary LLM model |
-| `model_fallbacks` | No | `["litellm/gemini-3.1-flash-lite-preview"]` | Fallback models (JSON array) |
+| `model_fallbacks` | No | `["litellm/gemini-3.1-flash-lite"]` | Fallback models (JSON array) |
 | `developers` | No | `{"default" = {active = true}}` | Map of developer names to config |
 | `min_instances` | No | `1` | Minimum Cloud Run instances per service (set >0 to avoid cold starts) |
 | `max_instances` | No | `3` | Maximum Cloud Run instances per service |

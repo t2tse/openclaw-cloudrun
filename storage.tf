@@ -209,9 +209,9 @@ locals {
         }
       },
       {
-        model_name = "gemini-3.1-flash-lite-preview"
+        model_name = "gemini-3.1-flash-lite"
         litellm_params = {
-          model           = "vertex_ai/gemini-3.1-flash-lite-preview"
+          model           = "vertex_ai/gemini-3.1-flash-lite"
           vertex_project  = var.project_id
           vertex_location = "global"
           timeout         = 120
