@@ -155,8 +155,8 @@ graph TD
 | Component | Purpose |
 |-----------|---------| 
 | **Cloud Run (gen2)** | Fully-managed, serverless containers with seccomp syscall filtering for sandbox-level isolation — no cluster management |
-| **Direct VPC Egress** | Cloud Run services egress directly into the VPC subnet — enabling private VM connectivity without a serverless VPC connector |
-| **LiteLLM Proxy** | Routes LLM requests to Vertex AI Gemini models via Workload Identity — no API keys |
+| **Direct VPC Egress** | Cloud Run services egress directly into the VPC subnet — enabling private connectivity between Cloud Run, Google APIs and VMs |
+| **LiteLLM Proxy** | Routes LLM requests to Vertex AI Gemini models via GCP Service Account — no API keys |
 | **Per-Developer Service Accounts** | Each developer's Cloud Run service runs under its own GCP SA — strict IAM isolation between developers |
 | **Per-Developer GCS Workspaces** | Each developer gets a dedicated GCS bucket mounted via GCS FUSE — isolated, persistent across revisions |
 | **Execution VM** *(optional)* | Windows or Linux VM for OS-native command execution (PowerShell, CMD, bash) |
@@ -433,7 +433,7 @@ gcloud run deploy ${NAME_PREFIX}-openclaw-litellm \
   --execution-environment gen2 \
   --port 4000 \
   --args="--config,/app/config/litellm_config.yaml,--port,4000" \
-  --no-allow-unauthenticated \
+#  --no-allow-unauthenticated \  # skip IAM check for now as it requires OIDC token from the calling OpenClaw Cloud Run service
   --ingress internal \
   --vpc-egress all-traffic \
   --network openclaw-run-vpc \
