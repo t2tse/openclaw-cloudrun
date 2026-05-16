@@ -524,7 +524,7 @@ gcloud run services list --project $PROJECT_ID --region $REGION
 # SERVICE                     REGION       URL
 # run-openclaw-brain-alice    us-central1  https://run-openclaw-brain-alice-...
 # run-openclaw-brain-bob      us-central1  https://run-openclaw-brain-bob-...
-# run-litellm                 us-central1  https://run-litellm-...
+# run-openclaw-litellm        us-central1  https://run-openclaw-litellm-...
 
 # Verify execution environment
 gcloud run services describe run-openclaw-brain-alice \
@@ -605,7 +605,7 @@ export REGION="us-central1"
 
 # Verify services are running
 gcloud run services list --project $PROJECT_ID --region $REGION
-# Expected: run-openclaw-brain-alice, run-openclaw-brain-bob, run-litellm in READY state
+# Expected: run-openclaw-brain-alice, run-openclaw-brain-bob, run-openclaw-litellm in READY state
 ```
 
 [Back to top](#table-of-contents)
@@ -614,12 +614,12 @@ gcloud run services list --project $PROJECT_ID --region $REGION
 
 ```bash
 # liveness check
-gcloud alpha run services ssh run-litellm \
+gcloud alpha run services ssh run-openclaw-litellm \
   --region $REGION --project $PROJECT_ID \
   <<< "node -e \"fetch('http://localhost:4000/health/liveness').then(r => r.text()).then(console.log)\""
 
 # readiness check
-gcloud alpha run services ssh run-litellm \
+gcloud alpha run services ssh run-openclaw-litellm \
   --region $REGION --project $PROJECT_ID \
   <<< "node -e \"fetch('http://localhost:4000/health/readiness').then(r => r.json()).then(console.log)\""
 ```
