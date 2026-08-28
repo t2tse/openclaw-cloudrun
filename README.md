@@ -1,12 +1,13 @@
 # OpenClaw on GCP — Cloud Run with MicroVM Sandbox Isolation
 
-Deploy [OpenClaw](https://docs.openclaw.ai) on Google Cloud using **Cloud Run** with MicroVM sandbox isolation (2nd-generation execution environment), GCS FUSE workspace mounts, Direct VPC Egress, and Vertex AI — fully managed by Terraform. Each developer gets an isolated Cloud Run service, GCS bucket, and service account. Optionally add execution VMs (Windows/Linux) for OS-native command execution.
+Deploy [OpenClaw](https://docs.openclaw.ai) on Google Cloud using **Cloud Run** (Services or Instances) with MicroVM sandbox isolation (2nd-generation execution environment), GCS FUSE workspace mounts, Direct VPC Egress, and Vertex AI — fully managed by Terraform. Each developer gets an isolated Cloud Run service or instance, GCS bucket, and service account. Optionally add execution VMs (Windows/Linux) for OS-native command execution.
 
 ---
 
 ## Table of Contents
 
 - [Architecture](#architecture)
+- [Cloud Run Deployment Options: Services vs. Instances](#cloud-run-deployment-options-services-vs-instances)
 - [Execution Environment Options](#execution-environment-options)
 - [Security Features](#security-features)
 - [Deployment Guide](#deployment-guide)
@@ -35,18 +36,18 @@ Deploy [OpenClaw](https://docs.openclaw.ai) on Google Cloud using **Cloud Run** 
 graph TD
     Dev["Developer (gcloud CLI / TUI)"]
 
-    Dev -->|"gcloud alpha run services ssh"| CR
+    Dev -->|"gcloud beta run services ssh / gcloud beta run instances ssh"| CR
 
     subgraph GCP["GCP Project"]
 
         subgraph CR["Cloud Run (gen2 — seccomp hardened)"]
 
-            subgraph SvcA["Service: run-openclaw-brain-alice"]
+            subgraph SvcA["Developer Alice\n(Service or Instance)"]
                 direction LR
                 GA["OpenClaw Gateway\n(:18789)"]
             end
 
-            subgraph SvcB["Service: run-openclaw-brain-bob"]
+            subgraph SvcB["Developer Bob\n(Service or Instance)"]
                 direction LR
                 GB["OpenClaw Gateway\n(:18789)"]
             end
@@ -101,13 +102,13 @@ graph TD
 graph TD
     Dev["Developer (gcloud CLI / TUI)"]
 
-    Dev -->|"gcloud alpha run services ssh"| GCP
+    Dev -->|"gcloud beta run services ssh / gcloud beta run instances ssh"| GCP
 
     subgraph GCP["GCP Project"]
 
         subgraph CR["Cloud Run (gen2)"]
-            SvcA["Service: run-openclaw-brain-alice\n(gateway :18789)"]
-            SvcB["Service: run-openclaw-brain-bob\n(gateway :18789)"]
+            SvcA["Developer Alice: Service / Instance\n(gateway :18789)"]
+            SvcB["Developer Bob: Service / Instance\n(gateway :18789)"]
             LITELLM["LiteLLM Proxy\n(:4000)"]
             SvcA --> LITELLM
             SvcB --> LITELLM
@@ -154,18 +155,51 @@ graph TD
 
 | Component | Purpose |
 |-----------|---------| 
-| **Cloud Run (gen2)** | Fully-managed, serverless containers with seccomp syscall filtering for sandbox-level isolation — no cluster management |
-| **Direct VPC Egress** | Cloud Run services egress directly into the VPC subnet — enabling private connectivity between Cloud Run, Google APIs and VMs |
+| **Cloud Run (Services / Instances)** | Fully-managed, serverless containers with seccomp syscall filtering (gen2 MicroVM) for sandbox-level isolation — choose between request-driven Services or dedicated singleton Instances |
+| **Direct VPC Egress** | Cloud Run services and instances egress directly into the VPC subnet — enabling private connectivity between Cloud Run, Google APIs and VMs |
 | **LiteLLM Proxy** | Routes LLM requests to Vertex AI Gemini models via GCP Service Account — no API keys |
-| **Per-Developer Service Accounts** | Each developer's Cloud Run service runs under its own GCP SA — strict IAM isolation between developers |
+| **Per-Developer Service Accounts** | Each developer's Cloud Run service or instance runs under its own GCP SA — strict IAM isolation between developers |
 | **Per-Developer GCS Workspaces** | Each developer gets a dedicated GCS bucket mounted via GCS FUSE — isolated, persistent across revisions |
 | **Execution VM** *(optional)* | Windows or Linux VM for OS-native command execution (PowerShell, CMD, bash) |
-| **Node Hosts** *(optional)* | Per-developer `openclaw node run` processes on VMs, connecting to Cloud Run services over TLS WebSocket |
+| **Node Hosts** *(optional)* | Per-developer `openclaw node run` processes on VMs, connecting to Cloud Run services/instances over TLS WebSocket |
 | **Cloud Monitoring** | Dashboard with 7 tiles, alert policies for crashes, disconnections, and exec denials |
 | **Cloud Logging** | Logs routed to GCS with lifecycle policies (90d Nearline, 365d Coldline) |
 
 
 [Back to top](#table-of-contents)
+
+---
+
+## Cloud Run Deployment Options: Services vs. Instances
+
+[Back to top](#table-of-contents)
+
+OpenClaw can be deployed onto Google Cloud using either **Cloud Run Services** or **Cloud Run Instances**. Both compute models leverage the same container image, Direct VPC Egress, GCS FUSE workspace volume mounts, and Secret Manager integrations, but they serve different operational workflows:
+
+| Feature / Dimension | Cloud Run Services (`gcloud run deploy`) | Cloud Run Instances (`gcloud beta run instances deploy`) |
+|---|---|---|
+| **Compute Model** | Request-driven, auto-scaling serverless service | Dedicated singleton container compute |
+| **Scaling Behavior** | Scales 0..N (configured with `--scaling 1` / `--min-instances 1`) | Always 1 dedicated instance while active |
+| **Lifecycle Management** | Traffic-driven with automated revision rollouts | Explicit lifecycle commands (`create`, `start`, `stop`, `restart`, `delete`) |
+| **CPU Allocation** | CPU allocated during request processing (requires `--no-cpu-throttling` for always-on) | Always allocated while instance is running |
+| **Cold Starts** | Possible if scaled to 0; eliminated with `--scaling 1 --no-cpu-throttling` | None while instance status is running |
+| **Developer Access** | `gcloud beta run services ssh` | `gcloud beta run instances ssh` & `gcloud beta run instances proxy` |
+| **Cost Model** | Billed per request & active container runtime | Billed continuously while instance is in running state (cost stops on `stop`) |
+| **Recommended For** | Shared proxies (e.g. LiteLLM), automated HTTP/webhook services | Per-developer persistent AI workspaces, interactive sessions |
+
+### When to Use Cloud Run Services (Option 1)
+
+Choose **Cloud Run Services** if:
+- You are deploying shared, request-driven backend components such as the **LiteLLM Proxy**.
+- You want automated zero-downtime revision rollouts and traffic shifting.
+- You want the platform to manage lifecycle automatically based on incoming traffic.
+
+### When to Use Cloud Run Instances (Option 2)
+
+Choose **Cloud Run Instances** if:
+- You are deploying **Per-Developer OpenClaw Brain sandboxes** where each developer needs dedicated, predictable compute without request-driven scaling side effects.
+- You want the ability to explicitly start/stop developer environments to save costs when inactive (e.g., `gcloud beta run instances stop`).
+- You want native local proxying (`gcloud beta run instances proxy`) and container SSH for day-to-day development, browser access, and debugging.
 
 ---
 
@@ -213,7 +247,7 @@ Changing `execution_environment` triggers a Cloud Run service revision — no do
 
 ### Sandbox Isolation
 
-Every OpenClaw brain service runs inside a Cloud Run sandbox — gen2 (MicroVM, default) or gen1 (gVisor) — set via `execution_environment`.
+Every OpenClaw brain service or instance runs inside a Cloud Run sandbox — gen2 (MicroVM, default) or gen1 (gVisor) — set via `execution_environment`.
 
 #### gen2 — MicroVM Sandbox (default)
 
@@ -233,11 +267,11 @@ Every OpenClaw brain service runs inside a Cloud Run sandbox — gen2 (MicroVM, 
 The authentication chain uses identity federation — no API key secrets exist:
 
 ```
-Cloud Run Service → GCP Service Account → Vertex AI
+Cloud Run Service / Instance → GCP Service Account → Vertex AI
 ```
 
 - LiteLLM uses Application Default Credentials via the metadata server.
-- Each developer's service has its own dedicated service account — no shared identity.
+- Each developer's service or instance has its own dedicated service account — no shared identity.
 - Tokens are automatically refreshed — no key rotation needed.
 - The only secrets stored are the gateway auth token (auto-generated) and optional Brave API key.
 
@@ -249,13 +283,13 @@ Cloud Run Service → GCP Service Account → Vertex AI
 | Cloud NAT | Outbound-only internet for image pulls and Vertex AI |
 | Deny-all ingress firewall | Only IAP SSH (`35.235.240.0/20`) and exec-VM-to-service allowed |
 | Per-developer GCS isolation | Each developer's workspace is a separate GCS bucket; cross-access not granted |
-| Per-developer SA | Each service has its own SA — compromise of one does not affect others |
+| Per-developer SA | Each service/instance has its own SA — compromise of one does not affect others |
 
 ### IAM Least Privilege
 
 | Service Account | Roles | Purpose |
 |----------------|-------|---------|
-| `run-openclaw-brain-{dev}` | `aiplatform.user`, `logging.logWriter`, `monitoring.metricWriter`, `storage.objectAdmin` (own bucket only), `secretmanager.secretAccessor` | Per-developer Cloud Run SA |
+| `run-openclaw-brain-{dev}` | `aiplatform.user`, `logging.logWriter`, `monitoring.metricWriter`, `storage.objectAdmin` (own bucket only), `secretmanager.secretAccessor` | Per-developer Cloud Run service / instance SA |
 | `run-openclaw-exec-vm` | `logging.logWriter`, `monitoring.metricWriter` | VM log/metric shipping |
 | `run-openclaw-cloudbuild` | `artifactregistry.writer`, `storage.objectAdmin`, `logging.logWriter` | Cloud Build image push |
 
@@ -293,7 +327,7 @@ This deployment sets `dangerouslyDisableDeviceAuth: true` — a deliberate choic
 - [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.5
 - [gcloud CLI](https://cloud.google.com/sdk/docs/install) authenticated with a project owner account
 - A GCP project with billing enabled
-- `gcloud components install alpha` (for Cloud Run SSH)
+- `gcloud components install beta` (for Cloud Run SSH and Cloud Run Instances)
 
 ### Step 1: Project Org Policies
 
@@ -382,7 +416,7 @@ This will:
 8. Set up monitoring dashboard, alert policies, and log sink
 9. *(If `exec_vms` is non-empty)* Create execution VMs, subnet, firewall, and startup scripts
 
-> **Note:** Cloud Run services are deployed separately in **Step 5** using `gcloud run deploy`.
+> **Note:** Cloud Run services or instances are deployed separately in **Step 6** using `gcloud run deploy` (Option 1) or `gcloud beta run instances deploy` (Option 2).
 
 Deployment takes approximately 8–12 minutes (Cloud Build image build is the bottleneck).
 
@@ -403,9 +437,9 @@ export REGION="us-central1"
 
 [Back to top](#table-of-contents)
 
-### Step 6: Deploy Cloud Run Services
+### Step 6: Deploy Cloud Run Services / Instances
 
-Terraform creates all supporting infrastructure (VPC, IAM, secrets, GCS buckets, Artifact Registry, and the container image via Cloud Build). The Cloud Run services themselves are deployed with `gcloud run deploy`.
+Terraform creates all supporting infrastructure (VPC, IAM, secrets, GCS buckets, Artifact Registry, and the container image via Cloud Build). In this step, deploy the LiteLLM proxy and choose whether to deploy developer brains as **Cloud Run Services (Option 1)** or **Cloud Run Instances (Option 2)**.
 
 ```bash
 export PROJECT_ID="my-gcp-project"
@@ -449,7 +483,9 @@ export LITELLM_URL=$(gcloud run services describe ${NAME_PREFIX}-openclaw-litell
   --format='value(status.url)')
 ```
 
-#### 6b: Deploy Per-Developer Brain Services
+#### Step 6b (Option 1): Deploy Per-Developer Brain Services to Cloud Run services
+
+Deploy per-developer brain instances as standard **Cloud Run Services** using `gcloud run deploy`. This option provides request-driven serverless services with automatic revision management.
 
 Repeat for each developer defined in `terraform.tfvars`. The example below uses `alice` — replace with each developer name.
 
@@ -509,6 +545,94 @@ GATEWAY_BIND=lan"
 > done
 > ```
 
+#### Step 6b (Option 2): Deploy Per-Developer Brain Services to Cloud Run instances
+
+Deploy per-developer brain instances as dedicated **Cloud Run Instances** using `gcloud beta run instances deploy`. 
+
+Unlike Cloud Run services which scale based on incoming HTTP traffic, Cloud Run instances are individually addressable, singleton compute containers with explicit lifecycle control (`create`, `start`, `stop`, `restart`, `delete`). This provides dedicated compute and avoids cold start concerns for long-running agent workflows.
+
+> **Note on Naming:** Cloud Run services and instances share the same resource namespace in a region. If you already have an existing Cloud Run service named `${NAME_PREFIX}-openclaw-brain-${DEVELOPER}`, deploy the instance with a distinct name such as `${NAME_PREFIX}-openclaw-instance-${DEVELOPER}` (e.g. `run-openclaw-instance-alice`).
+
+```bash
+DEVELOPER="alice"
+INSTANCE_NAME="${NAME_PREFIX}-openclaw-instance-${DEVELOPER}"
+
+gcloud beta run instances deploy ${INSTANCE_NAME} \
+  --image "${AR_REPO}/openclaw:latest" \
+  --region $REGION --project $PROJECT_ID \
+  --service-account ${NAME_PREFIX}-openclaw-brain-${DEVELOPER}@${PROJECT_ID}.iam.gserviceaccount.com \
+  --port 18789 \
+  --vpc-egress all-traffic \
+  --network openclaw-run-vpc \
+  --subnet $SUBNET \
+  --memory 2Gi --cpu 2 \
+  --ssh \
+  --set-secrets "GATEWAY_AUTH_TOKEN=${GATEWAY_SECRET}:latest,LITELLM_MASTER_KEY=${LITELLM_KEY_SECRET}:latest" \
+  --add-volume "mount-path=/app/workspace,type=cloud-storage,bucket=${PROJECT_ID}-${NAME_PREFIX}-openclaw-workspace-${DEVELOPER}" \
+  --set-env-vars "DEVELOPER=${DEVELOPER},\
+VERTEXAI_PROJECT=${PROJECT_ID},\
+VERTEXAI_LOCATION=global,\
+GOOGLE_VERTEX_BASE_URL=https://aiplatform.googleapis.com/,\
+LITELLM_BASE_URL=${LITELLM_URL}/v1,\
+MODEL_PRIMARY=litellm/gemini-3.1-pro-preview,\
+MODEL_FALLBACKS=[\"litellm/gemini-3.1-flash-lite\"],\
+OPENCLAW_STATE_DIR=/app/workspace/.openclaw-state,\
+OPENCLAW_NO_RESPAWN=1,\
+NODE_COMPILE_CACHE=/app/workspace/.openclaw-state/compile-cache,\
+OPENCLAW_HANDSHAKE_TIMEOUT_MS=60000,\
+NODE_TLS_REJECT_UNAUTHORIZED=0,\
+EXEC_VMS_ENABLED=false,\
+GATEWAY_BIND=lan"
+```
+
+> **Multiple developers:** Wrap the deploy in a loop:
+> ```bash
+> for DEVELOPER in alice bob; do
+>   gcloud beta run instances deploy ${NAME_PREFIX}-openclaw-instance-${DEVELOPER} \
+>     --image "${AR_REPO}/openclaw:latest" \
+>     --region $REGION --project $PROJECT_ID \
+>     --service-account ${NAME_PREFIX}-openclaw-brain-${DEVELOPER}@${PROJECT_ID}.iam.gserviceaccount.com \
+>     --port 18789 \
+>     --vpc-egress all-traffic \
+>     --network openclaw-run-vpc \
+>     --subnet $SUBNET \
+>     --memory 2Gi --cpu 2 \
+>     --ssh \
+>     --set-secrets "GATEWAY_AUTH_TOKEN=${GATEWAY_SECRET}:latest,LITELLM_MASTER_KEY=${LITELLM_KEY_SECRET}:latest" \
+>     --add-volume "mount-path=/app/workspace,type=cloud-storage,bucket=${PROJECT_ID}-${NAME_PREFIX}-openclaw-workspace-${DEVELOPER}" \
+>     --set-env-vars "DEVELOPER=${DEVELOPER},VERTEXAI_PROJECT=${PROJECT_ID},VERTEXAI_LOCATION=global,GOOGLE_VERTEX_BASE_URL=https://aiplatform.googleapis.com/,LITELLM_BASE_URL=${LITELLM_URL}/v1,MODEL_PRIMARY=litellm/gemini-3.1-pro-preview,MODEL_FALLBACKS=[\"litellm/gemini-3.1-flash-lite\"],OPENCLAW_STATE_DIR=/app/workspace/.openclaw-state,OPENCLAW_NO_RESPAWN=1,NODE_COMPILE_CACHE=/app/workspace/.openclaw-state/compile-cache,OPENCLAW_HANDSHAKE_TIMEOUT_MS=60000,NODE_TLS_REJECT_UNAUTHORIZED=0,EXEC_VMS_ENABLED=false,GATEWAY_BIND=lan"
+> done
+> ```
+
+##### Cloud Run Instances Lifecycle Management
+
+Cloud Run instances can be manually managed using the following CLI commands:
+
+```bash
+# List all Cloud Run instances
+gcloud beta run instances list --project $PROJECT_ID --region $REGION
+
+# View instance details and status
+gcloud beta run instances describe ${NAME_PREFIX}-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID
+
+# Stop an instance
+gcloud beta run instances stop ${NAME_PREFIX}-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID
+
+# Start an instance
+gcloud beta run instances start ${NAME_PREFIX}-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID
+
+# Restart an instance
+gcloud beta run instances restart ${NAME_PREFIX}-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID
+
+# Delete an instance
+gcloud beta run instances delete ${NAME_PREFIX}-openclaw-brain-alice \
+  --region $REGION --project $PROJECT_ID
+```
+
 [Back to top](#table-of-contents)
 
 ### Step 7: Verify
@@ -517,6 +641,7 @@ GATEWAY_BIND=lan"
 export PROJECT_ID="my-gcp-project"
 export REGION="us-central1"
 
+# --- For Cloud Run Services (Option 1) ---
 # List Cloud Run services
 gcloud run services list --project $PROJECT_ID --region $REGION
 
@@ -533,13 +658,21 @@ gcloud run services describe run-openclaw-brain-alice \
 # Expected: gen2
 
 # SSH into the container and verify non-root user
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'id'
 # Expected: uid=10001(openclaw) gid=10001(openclaw)
 
 # Verify GCS FUSE workspace mount
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'ls /app/workspace'
+
+# --- For Cloud Run Instances (Option 2) ---
+# List Cloud Run instances
+gcloud beta run instances list --project $PROJECT_ID --region $REGION
+
+# Describe instance status
+gcloud beta run instances describe ${NAME_PREFIX}-openclaw-instance-alice \
+  --region $REGION --project $PROJECT_ID
 ```
 
 [Back to top](#table-of-contents)
@@ -550,11 +683,13 @@ Wait 3–5 minutes for the VM startup script to install OpenClaw and start node 
 
 > **Automatic Pairing (New):** When `exec_vms` is non-empty, a background loop automatically approves pending node host pairing requests every 60 seconds. This loop is **automatically disabled** when no execution VMs are deployed to avoid event loop blocking. Manual approval via TUI/CLI is still supported if you prefer manual control.
 
+> **Tip for Cloud Run Instances:** If you deployed as a Cloud Run instance (Option 2), replace `gcloud beta run services ssh run-openclaw-brain-alice` with `gcloud beta run instances ssh run-openclaw-instance-alice`.
+
 #### Option A: Approve via TUI
 
 ```bash
-# SSH into alice's Cloud Run service and launch the TUI
-gcloud alpha run services ssh run-openclaw-brain-alice \
+# SSH into alice's Cloud Run service / instance and launch the TUI
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'npx openclaw tui'
 ```
 
@@ -564,11 +699,11 @@ Once in the TUI, you will see a pairing request notification. Type the approval 
 
 ```bash
 # List pending pairing requests
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes pending'
 
 # Approve a pending request by ID
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes approve <REQUEST_ID>'
 ```
 
@@ -578,12 +713,12 @@ gcloud alpha run services ssh run-openclaw-brain-alice \
 
 ```bash
 # Check alice's nodes
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes status'
 # Expected: linux-alice and/or windows-alice showing "paired · connected"
 
 # Check bob
-gcloud alpha run services ssh run-openclaw-brain-bob \
+gcloud beta run services ssh run-openclaw-brain-bob \
   --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes status'
 ```
 
@@ -597,15 +732,20 @@ gcloud alpha run services ssh run-openclaw-brain-bob \
 
 Step-by-step guide to verify every feature after deployment.
 
+> **Services vs. Instances:**
+> - **For Cloud Run Services (Option 1):** Use `gcloud run services list` and `gcloud beta run services ssh run-openclaw-brain-alice`.
+> - **For Cloud Run Instances (Option 2):** Use `gcloud beta run instances list` and `gcloud beta run instances ssh run-openclaw-instance-alice` (or `gcloud beta run instances proxy`).
+
 ### Prerequisites
 
 ```bash
 export PROJECT_ID="my-gcp-project"
 export REGION="us-central1"
 
-# Verify services are running
+# Verify services/instances are running
 gcloud run services list --project $PROJECT_ID --region $REGION
-# Expected: run-openclaw-brain-alice, run-openclaw-brain-bob, run-openclaw-litellm in READY state
+# Or for instances:
+# gcloud beta run instances list --project $PROJECT_ID --region $REGION
 ```
 
 [Back to top](#table-of-contents)
@@ -614,12 +754,12 @@ gcloud run services list --project $PROJECT_ID --region $REGION
 
 ```bash
 # liveness check
-gcloud alpha run services ssh run-openclaw-litellm \
+gcloud beta run services ssh run-openclaw-litellm \
   --region $REGION --project $PROJECT_ID \
   <<< "node -e \"fetch('http://localhost:4000/health/liveness').then(r => r.text()).then(console.log)\""
 
 # readiness check
-gcloud alpha run services ssh run-openclaw-litellm \
+gcloud beta run services ssh run-openclaw-litellm \
   --region $REGION --project $PROJECT_ID \
   <<< "node -e \"fetch('http://localhost:4000/health/readiness').then(r => r.json()).then(console.log)\""
 ```
@@ -638,7 +778,7 @@ gcloud run services describe run-openclaw-brain-alice \
 # Expected: gen2
 
 # Verify kernel isolation (dmesg should be blocked by seccomp in gen2)
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'dmesg 2>&1 | head -5'
 # Expected: "dmesg: read kernel buffer failed: Operation not permitted"
 ```
@@ -649,7 +789,7 @@ gcloud alpha run services ssh run-openclaw-brain-alice \
 
 ```bash
 # Launch the TUI inside alice's Cloud Run service
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'npx openclaw tui'
 ```
 
@@ -685,12 +825,12 @@ In the TUI:
 
 ```bash
 # Get alice's connected node ID
-ALICE_NODE=$(gcloud alpha run services ssh run-openclaw-brain-alice \
+ALICE_NODE=$(gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID \
   <<< 'npx openclaw nodes status --json 2>/dev/null' | jq -r '.nodes[] | select(.connected) | .id')
 
 # Invoke a system command
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID \
   <<< "npx openclaw nodes invoke --node \"$ALICE_NODE\" --command system.which --params '{\"bins\":[\"cmd\",\"powershell\",\"node\"]}'"
 
@@ -703,16 +843,16 @@ gcloud alpha run services ssh run-openclaw-brain-alice \
 
 ```bash
 # Write a file to alice's GCS workspace
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'echo "alice-private" > /tmp/secret.txt'
 
 # Verify bob cannot see it (separate GCS bucket)
-gcloud alpha run services ssh run-openclaw-brain-bob \
+gcloud beta run services ssh run-openclaw-brain-bob \
   --region $REGION --project $PROJECT_ID <<< 'cat /tmp/secret.txt 2>&1'
 # Expected: "No such file or directory"
 
 # Verify alice can still read it
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'cat /tmp/secret.txt'
 # Expected: "alice-private"
 ```
@@ -723,16 +863,20 @@ gcloud alpha run services ssh run-openclaw-brain-alice \
 
 ```bash
 # Write a marker file to alice's GCS FUSE workspace
-gcloud alpha run services ssh run-openclaw-brain-alice \
+# (Use 'gcloud beta run instances ssh run-openclaw-instance-alice' if using Option 2)
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'echo "persist-test" > /app/workspace/marker.txt'
 
-# Deploy a new revision (simulates a container restart)
+# Simulate a container restart / new revision:
+# For Cloud Run Services (Option 1):
 gcloud run services update run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID \
   --update-env-vars RESTART_MARKER=$(date +%s)
+# For Cloud Run Instances (Option 2):
+# gcloud beta run instances restart run-openclaw-instance-alice --region $REGION --project $PROJECT_ID
 
-# Verify the file survived (GCS FUSE persists across revisions)
-gcloud alpha run services ssh run-openclaw-brain-alice \
+# Verify the file survived (GCS FUSE persists across revisions and restarts)
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'cat /app/workspace/marker.txt'
 # Expected: "persist-test"
 ```
@@ -742,21 +886,21 @@ gcloud alpha run services ssh run-openclaw-brain-alice \
 ### Test 7: Logging Pipeline
 
 ```bash
-# Check logs are flowing to Cloud Logging
+# Check logs are flowing to Cloud Logging (for Services or Instances)
 gcloud logging read \
-  'resource.type="cloud_run_revision" AND resource.labels.service_name=~"run-openclaw-brain"' \
+  '(resource.type="cloud_run_revision" OR resource.type="cloud_run_instance")' \
   --project=$PROJECT_ID --limit=5 --format='value(textPayload)'
 
 # Verify log sink exists
 gcloud logging sinks list --project=$PROJECT_ID
 
 # Verify alert policies
-gcloud alpha monitoring policies list --project=$PROJECT_ID \
+gcloud monitoring policies list --project=$PROJECT_ID \
   --format='table(displayName,enabled)'
 ```
 
 Expected:
-- Recent log entries from OpenClaw Cloud Run services
+- Recent log entries from OpenClaw Cloud Run services or instances
 - Log sink pointing to a GCS bucket
 - Alert policies for CrashLoop, Node Disconnected, Exec Denied, and VM Node Host Failure
 
@@ -765,7 +909,7 @@ Expected:
 ### Test 8: Outbound Network Access
 
 ```bash
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID \
   <<< "node -e \"fetch('https://www.google.com').then(r => console.log(r.status))\""
 # Expected: 200 (Cloud NAT provides outbound access via Direct VPC Egress)
@@ -794,19 +938,24 @@ OpenClaw supports 20+ channels including Telegram, WhatsApp, Slack, Discord, Sig
 #### 2. Add the Channel via CLI
 
 ```bash
-gcloud alpha run services ssh run-openclaw-brain-alice \
+# (Use 'gcloud beta run instances ssh run-openclaw-instance-alice' if using Option 2)
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID \
   <<< 'npx openclaw channels add --channel telegram --token "YOUR_BOT_TOKEN"'
 ```
 
 #### 3. Apply Configuration
 
-Redeploy alice's service to pick up the new channel config:
+Restart or update alice's service/instance to pick up the new channel config:
 
 ```bash
+# For Cloud Run Services (Option 1):
 gcloud run services update run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID \
   --update-env-vars RELOAD=$(date +%s)
+
+# For Cloud Run Instances (Option 2):
+# gcloud beta run instances restart run-openclaw-instance-alice --region $REGION --project $PROJECT_ID
 ```
 
 #### 4. Approve Pairing
@@ -814,7 +963,7 @@ gcloud run services update run-openclaw-brain-alice \
 Send a message to your bot on Telegram. The bot will reply with a **pairing code** and ask you to approve it. From your terminal, run:
 
 ```bash
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID \
   <<< 'npx openclaw pairing approve telegram <PAIRING_CODE>'
 ```
@@ -830,7 +979,7 @@ Send another message to the bot. You should now receive a response from the Open
 To require pairing codes for all future Telegram conversations (recommended for production):
 
 ```bash
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID \
   <<< 'npx openclaw config set channels.telegram.dmPolicy "pairing"'
 ```
@@ -841,19 +990,19 @@ gcloud alpha run services ssh run-openclaw-brain-alice \
 
 ```bash
 # List configured channels
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'npx openclaw channels list'
 
 # Check channel status
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'npx openclaw channels status'
 
 # Remove a channel
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'npx openclaw channels remove --channel telegram'
 
 # Check channel logs
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'npx openclaw channels logs'
 ```
 
@@ -937,23 +1086,23 @@ After initial pairing, the node host identity is persisted on the VM. Subsequent
 
 ```bash
 # List all paired nodes and their connection status
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes status'
 
 # List pending pairing requests
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes pending'
 
 # Approve a pending node
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes approve <REQUEST_ID>'
 
 # Reject a pending node
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes reject <REQUEST_ID>'
 
 # Invoke a command on a connected node
-gcloud alpha run services ssh run-openclaw-brain-alice \
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID \
   <<< 'npx openclaw nodes invoke --node <NODE_ID> --command system.which --params "{\"bins\":[\"node\"]}"'
 ```
@@ -987,17 +1136,22 @@ If nodes accumulate stale paired entries (e.g., after VM reprovisioning), clean 
 
 ```bash
 # List all paired nodes — note IDs of stale/disconnected entries
-gcloud alpha run services ssh run-openclaw-brain-alice \
+# (Use 'gcloud beta run instances ssh run-openclaw-instance-alice' if using Option 2)
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID <<< 'npx openclaw nodes list'
 
-# Remove stale entries by deleting the pairing data and redeploying
-gcloud alpha run services ssh run-openclaw-brain-alice \
+# Remove stale entries by deleting the pairing data and redeploying/restarting
+gcloud beta run services ssh run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID \
   <<< 'rm -f ~/.openclaw/nodes/paired.json ~/.openclaw/devices/paired.json'
 
+# For Cloud Run Services (Option 1):
 gcloud run services update run-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID \
   --update-env-vars RELOAD=$(date +%s)
+
+# For Cloud Run Instances (Option 2):
+# gcloud beta run instances restart run-openclaw-instance-alice --region $REGION --project $PROJECT_ID
 ```
 
 Then re-approve the node hosts when they reconnect.
@@ -1126,12 +1280,12 @@ terraform apply
 
 [Back to top](#table-of-contents)
 
-All OpenClaw logs from pods and VMs are collected, stored, and monitored through a unified observability stack managed entirely by Terraform.
+All OpenClaw logs from pods, instances, and VMs are collected, stored, and monitored through a unified observability stack managed entirely by Terraform.
 
 ```mermaid
 graph LR
     subgraph Sources
-        SVC["Cloud Run Services\nstdout/stderr"]
+        SVC["Cloud Run Services / Instances\nstdout/stderr"]
         LINUX_VM["Linux VM\njournald"]
         WIN_VM["Windows VM\nEvent Log + File Logs"]
     end
@@ -1165,7 +1319,7 @@ graph LR
 
 | Source | Mechanism | What's Collected |
 |--------|-----------|-----------------|
-| **Cloud Run services** | Cloud Run auto-ships stdout/stderr | Gateway startup, WebSocket activity, pairing, exec results, errors |
+| **Cloud Run services / instances** | Cloud Run auto-ships stdout/stderr | Gateway startup, WebSocket activity, pairing, exec results, errors |
 | **Linux VM** | Ops Agent (`systemd_journal` receiver) | Node host connect/disconnect, exec output, restart events |
 | **Windows VM** | Ops Agent (`windows_event_log` + `files` receiver) | Node host output, scheduled task events, errors |
 
@@ -1182,7 +1336,7 @@ GCS lifecycle policies: 0–90 days Standard, 90–365 days Nearline, 365+ days 
 
 | Alert | Trigger | Meaning |
 |-------|---------|---------|
-| **Exec Approval Denied** | `SYSTEM_RUN_DENIED` in service logs | Node host denied a command |
+| **Exec Approval Denied** | `SYSTEM_RUN_DENIED` in service/instance logs | Node host denied a command |
 | **Node Host Disconnected** | `NOT_CONNECTED` >50 in 5 min | Stale paired nodes or VM down |
 | **Service CrashLoop** | Repeated container exits in Cloud Run logs | Bad config, missing secrets |
 | **VM Node Host Failure** | `Node host exited` or `ERROR` >5 in 5 min | Node host process crashing |
@@ -1200,7 +1354,7 @@ Access at: **Cloud Console → Monitoring → Dashboards → OpenClaw Operations
 
 | Panel | Shows |
 |-------|-------|
-| Gateway Service Logs | All Cloud Run gateway service logs (all developers) |
+| Gateway Service / Instance Logs | All Cloud Run gateway service and instance logs (all developers) |
 | Execution VM Logs | All VM logs (Linux + Windows) |
 | Exec Denied Events | `SYSTEM_RUN_DENIED` events over time |
 | Node Disconnection Errors | `NOT_CONNECTED` errors over time |
@@ -1232,7 +1386,7 @@ Access at: **Cloud Console → Monitoring → Dashboards → OpenClaw Operations
 | `gateway_auth_token` | No | auto-generated | Gateway auth token (sensitive) |
 | `brave_api_key` | No | `""` | Brave Search API key (sensitive) |
 | **OpenClaw** | | | |
-| `sandbox_image` | No | `""` | Custom Docker image for Cloud Run services |
+| `sandbox_image` | No | `""` | Custom Docker image for Cloud Run services and instances |
 | `openclaw_version` | No | `latest` | OpenClaw npm package version |
 | `model_primary` | No | `litellm/gemini-3.1-pro-preview` | Primary LLM model |
 | `model_fallbacks` | No | `["litellm/gemini-3.1-flash-lite"]` | Fallback models (JSON array) |
@@ -1254,7 +1408,7 @@ Access at: **Cloud Console → Monitoring → Dashboards → OpenClaw Operations
 
 | Output | Description |
 |--------|-------------|
-| `cloudrun_service_urls` | Map of developer name → Cloud Run service URL |
+| `cloudrun_service_urls` | Map of developer name → Cloud Run service URL (if using Services) |
 | `litellm_service_url` | LiteLLM Cloud Run service URL (internal) |
 | `exec_vms` | Map of execution VM names to instance name, IP, and OS image |
 | `artifact_registry_url` | Docker registry URL |
@@ -1300,7 +1454,7 @@ openclaw-cloudrun/
 
 [Back to top](#table-of-contents)
 
-Cloud Run services use Direct VPC Egress — all traffic routes through the VPC. Without Private Google Access DNS, calls from one Cloud Run service to another `*.run.app` URL will fail because there is no public internet path (no external IP, deny-all ingress firewall).
+Cloud Run services and instances use Direct VPC Egress — all traffic routes through the VPC. Without Private Google Access DNS, calls from one Cloud Run service/instance to another `*.run.app` URL will fail because there is no public internet path (no external IP, deny-all ingress firewall).
 
 A private Cloud DNS zone redirects `*.run.app` to the `private.googleapis.com` VIP, which is reachable from inside Google Cloud without an external IP.
 
@@ -1348,7 +1502,7 @@ gcloud dns record-sets list \
 
 # 3. Verify DNS resolution from inside a Cloud Run container
 #    (resolves a *.run.app hostname — the exact address does not matter)
-gcloud alpha run services ssh ${NAME_PREFIX}-openclaw-brain-alice \
+gcloud beta run services ssh ${NAME_PREFIX}-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID \
   <<< 'getent hosts some-service-abc123.a.run.app'
 
@@ -1356,7 +1510,7 @@ gcloud alpha run services ssh ${NAME_PREFIX}-openclaw-brain-alice \
 # e.g.  199.36.153.9   some-service-abc123.a.run.app
 
 # 4. Smoke-test reachability to the private.googleapis.com VIP
-gcloud alpha run services ssh ${NAME_PREFIX}-openclaw-brain-alice \
+gcloud beta run services ssh ${NAME_PREFIX}-openclaw-brain-alice \
   --region $REGION --project $PROJECT_ID \
   <<< 'curl -si --max-time 5 https://run.app/ | head -3'
 
@@ -1407,7 +1561,7 @@ This has been **fixed automatically** in recent versions. The auto-pair loop now
 ```bash
 # Check if auto-pair loop is running
 gcloud logging read \
-  'resource.type="cloud_run_revision" AND resource.labels.service_name="run-openclaw-brain-alice" AND textPayload:"auto-pair"' \
+  '(resource.type="cloud_run_revision" OR resource.type="cloud_run_instance") AND textPayload:"auto-pair"' \
   --project=$PROJECT_ID --limit=5 --format='value(textPayload)'
 
 # Expected when exec_vms is empty:
@@ -1432,7 +1586,11 @@ If you still experience slowness after this fix, check gateway logs for other so
 [Back to top](#table-of-contents)
 
 ```bash
-# Destroy all Cloud Run resources
+# If you deployed Cloud Run Instances (Option 2), delete them first:
+# gcloud beta run instances delete run-openclaw-instance-alice --region $REGION --project $PROJECT_ID
+# gcloud beta run instances delete run-openclaw-instance-bob --region $REGION --project $PROJECT_ID
+
+# Destroy all supporting Terraform resources
 terraform destroy
 ```
 
