@@ -8,13 +8,21 @@ export MODEL_FALLBACKS="${MODEL_FALLBACKS:-[\"litellm/gemini-3.1-flash-lite\"]}"
 export GATEWAY_AUTH_TOKEN="${GATEWAY_AUTH_TOKEN:-}"
 export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-}"
 export GATEWAY_BIND="${GATEWAY_BIND:-loopback}"
+export SANDBOX_MODE="${SANDBOX_MODE:-all}"
 
-envsubst '$MODEL_PRIMARY,$MODEL_FALLBACKS,$GATEWAY_AUTH_TOKEN,$LITELLM_MASTER_KEY,$GATEWAY_BIND' < /app/openclaw.json.template > /app/openclaw.json
-
-# Use persistent state dir on PVC so pairings survive pod restarts
+# Use persistent state dir on PVC / GCS so pairings and configs survive restarts
 STATE_DIR="${OPENCLAW_STATE_DIR:-$HOME/.openclaw}"
+export OPENCLAW_STATE_DIR="$STATE_DIR"
 umask 077
 mkdir -p "$STATE_DIR"
+
+envsubst '$MODEL_PRIMARY,$MODEL_FALLBACKS,$GATEWAY_AUTH_TOKEN,$LITELLM_MASTER_KEY,$GATEWAY_BIND,$SANDBOX_MODE,$OPENCLAW_STATE_DIR' < /app/openclaw.json.template > /app/openclaw.json
+
+# Seed plugins from image into state directory (GCS mount / PVC)
+if [ -d /app/plugins-seed ]; then
+  mkdir -p "$STATE_DIR/plugins"
+  cp -rf /app/plugins-seed/* "$STATE_DIR/plugins/" 2>/dev/null || true
+fi
 
 # Create compile cache directory for NODE_COMPILE_CACHE (Node.js v22.8+)
 if [ -n "$NODE_COMPILE_CACHE" ]; then

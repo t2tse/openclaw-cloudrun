@@ -1,0 +1,13 @@
+{
+  "name": "cloud-run-sandbox-provider",
+  "version": "1.0.0",
+  "description": "Cloud Run Sandbox Provider for OpenClaw",
+  "type": "module",
+  "main": "index.mjs",
+  "openclaw": {
+    "extensions": [
+      "./index.mjs"
+    ]
+  }
+}
+

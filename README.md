@@ -262,6 +262,14 @@ Every OpenClaw brain service or instance runs inside a Cloud Run sandbox — gen
 - **Lower cold-start overhead** — No MicroVM boot sequence.
 - Use when gen2 causes compatibility issues.
 
+#### Cloud Run Sandbox Provider Plugin (Agent Execution Isolation)
+
+In addition to host-level container isolation, OpenClaw features a native **Cloud Run Sandbox Provider Plugin** (`plugins/cloud-run-sandbox-provider`):
+- When enabled (`sandbox_mode = "all"`, default), agent tool calls and commands are executed in an isolated sandbox environment using `/usr/local/gcp/bin/sandbox`.
+- The plugin automatically mounts the developer workspace directory into the sandbox (`--mount type=bind,source=<workdir>,destination=<workdir>`).
+- Files are synced to the persistent GCS state bucket on startup via `entrypoint.sh`.
+- **Option to Disable**: If you want OpenClaw agents to execute commands directly in the main container without the nested sandbox layer, set `sandbox_mode = "off"` in Terraform or `SANDBOX_MODE="off"` in the container environment.
+
 ### Zero API Keys
 
 The authentication chain uses identity federation — no API key secrets exist:
@@ -1379,6 +1387,7 @@ Access at: **Cloud Console → Monitoring → Dashboards → OpenClaw Operations
 | `network_name` | No | `openclaw-run-vpc` | VPC network name |
 | `cloudrun_subnet_cidr` | No | `10.10.0.0/24` | Cloud Run Direct VPC Egress subnet CIDR |
 | `execution_environment` | No | `gen2` | Cloud Run execution environment: `gen2` (recommended, seccomp hardening) or `gen1` |
+| `sandbox_mode` | No | `all` | OpenClaw agent sandbox mode: `all` (default, routes executions through Cloud Run sandbox provider `/usr/local/gcp/bin/sandbox`), `off` (disabled) |
 | **Execution VMs** | | | |
 | `exec_vms` | No | `{}` | Map of execution VMs to deploy |
 | `exec_vm_subnet_cidr` | No | `10.20.0.0/24` | VM subnet CIDR |

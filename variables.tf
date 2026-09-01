@@ -86,6 +86,22 @@ variable "execution_environment" {
   }
 }
 
+variable "sandbox_mode" {
+  description = <<-EOT
+    Sandbox mode for OpenClaw agents:
+      "all"  — (Default) Route tool/code executions through the Cloud Run sandbox provider (/usr/local/gcp/bin/sandbox)
+      "off"  — Disable sandboxing (commands execute in the main container)
+      "non-interactive" — Sandbox only non-interactive tool calls
+  EOT
+  type        = string
+  default     = "all"
+
+  validation {
+    condition     = contains(["all", "off", "non-interactive"], var.sandbox_mode)
+    error_message = "sandbox_mode must be 'all', 'off', or 'non-interactive'."
+  }
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Execution VMs (optional -- empty by default)
 # Add VMs for executing OS-native commands (Windows and/or Linux).

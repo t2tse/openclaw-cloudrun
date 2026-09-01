@@ -1,0 +1,14 @@
+{
+  "id": "cloud-run-sandbox-provider",
+  "name": "Cloud Run Sandbox Provider",
+  "entry": "./index.mjs",
+  "kind": "tool",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {}
+  }
+}
+

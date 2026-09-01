@@ -65,7 +65,9 @@
         "maxConcurrent": 8
       },
       "sandbox": {
-        "mode": "off"
+        "mode": "${SANDBOX_MODE}",
+        "workspaceAccess": "rw",
+        "backend": "cloud-run-sandbox"
       }
     }
   },
@@ -106,7 +108,18 @@
 
   "plugins": {
     "enabled": true,
-    "allow": ["litellm"]
+    "allow": ["litellm", "cloud-run-sandbox-provider"],
+    "load": {
+      "paths": [
+        "${OPENCLAW_STATE_DIR}/plugins",
+        "/app/plugins"
+      ]
+    },
+    "entries": {
+      "cloud-run-sandbox-provider": {
+        "enabled": true
+      }
+    }
   },
 
   "discovery": {

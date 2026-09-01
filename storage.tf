@@ -93,9 +93,12 @@ resource "google_artifact_registry_repository" "litellm_remote" {
 # Build and push OpenClaw container image via Cloud Build
 resource "null_resource" "build_openclaw_image" {
   triggers = {
-    dockerfile_hash = filesha256("${path.module}/Dockerfile")
-    entrypoint_hash = filesha256("${path.module}/scripts/entrypoint.sh")
-    config_hash     = filesha256("${path.module}/openclaw.json.template")
+    dockerfile_hash  = filesha256("${path.module}/Dockerfile")
+    entrypoint_hash  = filesha256("${path.module}/scripts/entrypoint.sh")
+    config_hash      = filesha256("${path.module}/openclaw.json.template")
+    plugin_pkg_hash  = filesha256("${path.module}/plugins/cloud-run-sandbox-provider/package.json")
+    plugin_cfg_hash  = filesha256("${path.module}/plugins/cloud-run-sandbox-provider/openclaw.plugin.json")
+    plugin_code_hash = filesha256("${path.module}/plugins/cloud-run-sandbox-provider/index.mjs")
   }
 
   provisioner "local-exec" {
