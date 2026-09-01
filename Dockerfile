@@ -30,11 +30,8 @@ COPY workspace/ /app/workspace-seed/
 COPY plugins/ /app/plugins-seed/
 COPY plugins/ /app/plugins/
 
-# Create non-root user and directories (including netns directory for sandbox --allow-egress)
-RUN groupadd -r -g 10001 openclaw && useradd -r -u 10001 -g openclaw -d /app -s /bin/sh openclaw \
-    && mkdir -p /app/workspace /app/plugins /var/log/openclaw /var/run/netns /run/netns \
-    && chmod 1777 /var/run /run /var/run/netns /run/netns \
-    && chown -R openclaw:openclaw /app /var/log/openclaw /var/run/netns /run/netns
+# Create runtime directories (including netns directory for sandbox --allow-egress)
+RUN mkdir -p /app/workspace /app/plugins /var/log/openclaw /var/run/netns /run/netns
 
 # Expose port
 EXPOSE 18789
@@ -42,7 +39,5 @@ EXPOSE 18789
 # Copy entrypoint script
 COPY scripts/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
-
-USER openclaw
 
 ENTRYPOINT ["/app/entrypoint.sh"]
