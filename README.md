@@ -267,7 +267,7 @@ Every OpenClaw brain service or instance runs inside a Cloud Run sandbox — gen
 In addition to host-level container isolation, OpenClaw features a native **Cloud Run Sandbox Provider Plugin** (`plugins/cloud-run-sandbox-provider`):
 - When enabled (`sandbox_mode = "all"`, default), agent tool calls and commands are executed in an isolated sandbox environment using `/usr/local/gcp/bin/sandbox`.
 - The plugin automatically mounts the developer workspace directory into the sandbox (`--mount type=bind,source=<workdir>,destination=<workdir>`).
-- Files are synced to the persistent GCS state bucket on startup via `entrypoint.sh`.
+- **Network Egress (`--allow-egress`)**: By default, Cloud Run sandboxes block outbound network traffic (`sandbox_allow_egress = false` / `SANDBOX_ALLOW_EGRESS="false"`). If your agents require outbound network access (e.g., package installations, web fetch, external API queries from within the sandbox), set `sandbox_allow_egress = true` in Terraform or pass `SANDBOX_ALLOW_EGRESS="true"` in the container environment.
 - **Option to Disable**: If you want OpenClaw agents to execute commands directly in the main container without the nested sandbox layer, set `sandbox_mode = "off"` in Terraform or `SANDBOX_MODE="off"` in the container environment.
 
 ### Zero API Keys
@@ -1388,6 +1388,7 @@ Access at: **Cloud Console → Monitoring → Dashboards → OpenClaw Operations
 | `cloudrun_subnet_cidr` | No | `10.10.0.0/24` | Cloud Run Direct VPC Egress subnet CIDR |
 | `execution_environment` | No | `gen2` | Cloud Run execution environment: `gen2` (recommended, seccomp hardening) or `gen1` |
 | `sandbox_mode` | No | `all` | OpenClaw agent sandbox mode: `all` (default, routes executions through Cloud Run sandbox provider `/usr/local/gcp/bin/sandbox`), `off` (disabled) |
+| `sandbox_allow_egress` | No | `false` | Allow outbound network egress from inside the sandbox container (`--allow-egress`) |
 | **Execution VMs** | | | |
 | `exec_vms` | No | `{}` | Map of execution VMs to deploy |
 | `exec_vm_subnet_cidr` | No | `10.20.0.0/24` | VM subnet CIDR |

@@ -9,6 +9,7 @@ export GATEWAY_AUTH_TOKEN="${GATEWAY_AUTH_TOKEN:-}"
 export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-}"
 export GATEWAY_BIND="${GATEWAY_BIND:-loopback}"
 export SANDBOX_MODE="${SANDBOX_MODE:-all}"
+export SANDBOX_ALLOW_EGRESS="${SANDBOX_ALLOW_EGRESS:-false}"
 
 # Use persistent state dir on PVC / GCS so pairings and configs survive restarts
 STATE_DIR="${OPENCLAW_STATE_DIR:-$HOME/.openclaw}"

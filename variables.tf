@@ -102,6 +102,12 @@ variable "sandbox_mode" {
   }
 }
 
+variable "sandbox_allow_egress" {
+  description = "Whether to allow outbound network egress from inside the Cloud Run sandbox (--allow-egress)."
+  type        = bool
+  default     = false
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Execution VMs (optional -- empty by default)
 # Add VMs for executing OS-native commands (Windows and/or Linux).

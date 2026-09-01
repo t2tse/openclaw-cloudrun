@@ -3,6 +3,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { registerSandboxBackend } from "openclaw/plugin-sdk/sandbox";
 
 const SANDBOX_BINARY_PATH = process.env.OPENCLAW_SANDBOX_BINARY_PATH || "/usr/local/gcp/bin/sandbox";
+const ALLOW_EGRESS = process.env.SANDBOX_ALLOW_EGRESS === "true" || process.env.SANDBOX_ALLOW_EGRESS === "1";
 
 function runCommandRaw(command, args, stdin = null) {
   return new Promise((resolve) => {
@@ -34,6 +35,7 @@ async function ensureSandboxRunning(sandboxId, workspaceDir) {
     "run",
     "--detach",
     "--write",
+    ...(ALLOW_EGRESS ? ["--allow-egress"] : []),
     "--mount", `type=bind,source=${workspaceDir},destination=${workspaceDir}`,
     sandboxId
   ];
